@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: MyChat
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/test?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: z
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      minimum-idle: 3
+      maximum-pool-size: 10
+      max-lifetime: 30000   #不能小于30秒，否则默认回到1800秒
+      connection-test-query: SELECT 1
+
+server:
+  port: 8080
+
+jwt:
+  secret: aVeryLongAndSecureKeyWithAtLeast32Characters123!
+  expiration: 60000
