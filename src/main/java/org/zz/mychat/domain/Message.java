@@ -12,6 +12,9 @@ public class Message {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    /** 所属房间 room.id */
+    private Long roomId;
+
     /** 发送者 anon_id */
     private String senderId;
 

@@ -4,6 +4,10 @@ import {
   AlertCircle,
   ArrowDown,
   ArrowUp,
+  Check,
+  Copy,
+  Link2,
+  Lock,
   LogOut,
   MessageSquare,
   RefreshCw,
@@ -19,6 +23,7 @@ import {formatDateDivider, formatDateKey, formatMessageTime} from '@/utils/forma
 
 const {
   currentUser,
+  currentRoom,
   messages,
   onlineUsers,
   status,
@@ -26,7 +31,7 @@ const {
   errorMessage,
   sendMessage,
   manualReconnect,
-  logout,
+  leaveRoom,
   clearError,
 } = useChatSocket();
 
@@ -36,11 +41,73 @@ const showMobileUsers = ref(false);
 const isComposing = ref(false);
 const isAtBottom = ref(true);
 const unreadBelowCount = ref(0);
+const copiedShare = ref(false);
+const copiedCode = ref(false);
+let copiedShareTimer: number | null = null;
+let copiedCodeTimer: number | null = null;
 
 const scrollContainerRef = ref<HTMLElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 
-const STARTER_PROMPTS = ['大家好 👋', '刚来到大厅，聊点什么？', '今天过得怎么样？'];
+const STARTER_PROMPTS = ['大家好 👋', '刚进房间，聊点什么？', '今天过得怎么样？'];
+
+const shareUrl = computed(() => {
+  if (!currentRoom.value) return '';
+  return `${window.location.origin}/?room=${encodeURIComponent(currentRoom.value.code)}`;
+});
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fallback below
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+async function handleCopyShareLink(): Promise<void> {
+  if (!shareUrl.value) return;
+  const ok = await copyToClipboard(shareUrl.value);
+  if (ok) {
+    copiedShare.value = true;
+    if (copiedShareTimer !== null) window.clearTimeout(copiedShareTimer);
+    copiedShareTimer = window.setTimeout(() => {
+      copiedShare.value = false;
+      copiedShareTimer = null;
+    }, 2200);
+  }
+}
+
+async function handleCopyRoomCode(): Promise<void> {
+  if (!currentRoom.value) return;
+  const ok = await copyToClipboard(currentRoom.value.code);
+  if (ok) {
+    copiedCode.value = true;
+    if (copiedCodeTimer !== null) window.clearTimeout(copiedCodeTimer);
+    copiedCodeTimer = window.setTimeout(() => {
+      copiedCode.value = false;
+      copiedCodeTimer = null;
+    }, 1800);
+  }
+}
 
 const MAX_LENGTH = 500;
 const draftCharCount = computed(() => Array.from(draft.value).length);
@@ -217,27 +284,72 @@ onMounted(() => {
   >
     <!-- Frosted iOS Top Header -->
     <header
-      class="h-14 shrink-0 px-4 sm:px-6 flex items-center justify-between gap-4 ios-glass-bar border-b border-black/[0.06] dark:border-white/[0.08] z-20"
+      class="h-14 shrink-0 px-4 sm:px-6 flex items-center justify-between gap-3 ios-glass-bar border-b border-black/[0.06] dark:border-white/[0.08] z-20"
     >
       <div class="flex items-center gap-2.5 min-w-0">
         <span
-          class="h-8 w-8 rounded-[10px] bg-gradient-to-b from-[#3395FF] to-[#007AFF] dark:from-[#2997FF] dark:to-[#0A84FF] text-white inline-flex items-center justify-center shrink-0 shadow-[0_2px_8px_rgba(0,122,255,0.28)]"
+          class="h-8 w-8 rounded-[10px] text-white inline-flex items-center justify-center shrink-0"
+          :class="
+            currentRoom?.isPrivate
+              ? 'bg-gradient-to-b from-[#FFAA33] to-[#FF9500] dark:from-[#FFB340] dark:to-[#FF9F0A] shadow-[0_2px_8px_rgba(255,149,0,0.28)]'
+              : 'bg-gradient-to-b from-[#3395FF] to-[#007AFF] dark:from-[#2997FF] dark:to-[#0A84FF] shadow-[0_2px_8px_rgba(0,122,255,0.28)]'
+          "
           aria-hidden="true"
         >
-          <MessageSquare class="w-4 h-4 fill-white/15" />
+          <Lock v-if="currentRoom?.isPrivate" class="w-4 h-4" />
+          <MessageSquare v-else class="w-4 h-4 fill-white/15" />
         </span>
-        <span class="hidden sm:inline text-[13px] text-[#636366] dark:text-[#98989F] whitespace-nowrap shrink-0">
-          <span class="font-mono-tabular font-semibold text-[#1C1C1E] dark:text-[#F5F5F7]">{{ onlineUsers.length }}</span>
-          人在线
-        </span>
+
+        <div class="flex items-center gap-2 min-w-0">
+          <h1
+            class="text-[15px] font-semibold tracking-[-0.015em] text-[#1C1C1E] dark:text-[#F5F5F7] truncate max-w-[140px] sm:max-w-[240px]"
+            :title="currentRoom?.name"
+          >
+            {{ currentRoom?.name }}
+          </h1>
+
+          <button
+            v-if="currentRoom"
+            type="button"
+            @click="handleCopyRoomCode"
+            title="点击复制房间号"
+            class="inline-flex items-center gap-1 h-6 px-2 rounded-full text-[12px] font-mono-tabular bg-black/[0.05] text-[#636366] hover:bg-black/[0.09] hover:text-[#1C1C1E] dark:bg-white/[0.09] dark:text-[#98989F] dark:hover:bg-white/[0.15] dark:hover:text-[#F5F5F7] transition-colors shrink-0 cursor-pointer"
+          >
+            <span>#{{ currentRoom.code }}</span>
+            <Check v-if="copiedCode" class="w-3 h-3 text-[#34C759] dark:text-[#30D158]" />
+            <Copy v-else class="w-3 h-3 opacity-70" />
+          </button>
+
+          <span class="hidden md:inline text-[13px] text-[#636366] dark:text-[#98989F] whitespace-nowrap shrink-0">
+            <span class="font-mono-tabular font-semibold text-[#1C1C1E] dark:text-[#F5F5F7]">{{ onlineUsers.length }}</span>
+            人在线
+          </span>
+        </div>
       </div>
 
       <div class="flex items-center gap-2 shrink-0">
+        <!-- Share Room Link button -->
+        <button
+          type="button"
+          @click="handleCopyShareLink"
+          :title="copiedShare ? '已复制分享链接' : '复制房间分享链接'"
+          class="inline-flex items-center justify-center gap-1.5 h-9 px-3 sm:px-3.5 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 active:scale-[0.96] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] cursor-pointer"
+          :class="
+            copiedShare
+              ? 'bg-[#34C759]/15 text-[#248A3D] dark:bg-[#30D158]/20 dark:text-[#30D158]'
+              : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16 dark:bg-[#0A84FF]/18 dark:text-[#409CFF] dark:hover:bg-[#0A84FF]/26'
+          "
+        >
+          <Check v-if="copiedShare" class="w-3.5 h-3.5 shrink-0" />
+          <Link2 v-else class="w-3.5 h-3.5 shrink-0" />
+          <span class="hidden sm:inline">{{ copiedShare ? '已复制链接' : '分享链接' }}</span>
+        </button>
+
         <!-- Mobile online members trigger -->
         <button
           type="button"
           @click="showMobileUsers = true"
-          class="md:hidden inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 bg-black/[0.05] text-[#1C1C1E] hover:bg-black/[0.09] active:scale-[0.96] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-white/[0.15] transition-all cursor-pointer"
+          class="md:hidden inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 bg-black/[0.05] text-[#1C1C1E] hover:bg-black/[0.09] active:scale-[0.96] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-white/[0.15] transition-all cursor-pointer"
           aria-label="查看在线成员"
         >
           <Users class="w-3.5 h-3.5 shrink-0" />
@@ -248,11 +360,11 @@ onMounted(() => {
 
         <button
           type="button"
-          @click="logout"
-          class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 bg-black/[0.05] text-[#1C1C1E] hover:bg-[#FF3B30]/12 hover:text-[#D70015] active:scale-[0.96] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-[#FF453A]/18 dark:hover:text-[#FF453A] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] cursor-pointer"
+          @click="leaveRoom"
+          class="inline-flex items-center justify-center gap-1.5 h-9 px-3 sm:px-3.5 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 bg-black/[0.05] text-[#1C1C1E] hover:bg-[#FF3B30]/12 hover:text-[#D70015] active:scale-[0.96] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-[#FF453A]/18 dark:hover:text-[#FF453A] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] cursor-pointer"
         >
           <LogOut class="w-3.5 h-3.5 shrink-0" />
-          <span>退出</span>
+          <span class="hidden sm:inline">离开房间</span>
         </button>
       </div>
     </header>
@@ -332,12 +444,28 @@ onMounted(() => {
                 <MessageSquare class="w-6 h-6" />
               </div>
               <p class="text-[16px] font-semibold tracking-[-0.015em] text-[#1C1C1E] dark:text-[#F5F5F7]">
-                公共大厅已就绪
+                「{{ currentRoom?.name }}」已就绪
               </p>
               <p class="mt-1 text-[13px] text-[#8E8E93]">
-                还没有聊天记录，发一句问候开启对话吧
+                房间号 <span class="font-mono-tabular">#{{ currentRoom?.code }}</span> · 还没有聊天记录，发一句问候或邀请好友加入吧
               </p>
-              <div class="mt-6 flex flex-wrap items-center justify-center gap-2">
+              <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  @click="handleCopyShareLink"
+                  class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-[13px] font-medium transition-all active:scale-[0.97] cursor-pointer"
+                  :class="
+                    copiedShare
+                      ? 'bg-[#34C759]/15 text-[#248A3D] dark:bg-[#30D158]/20 dark:text-[#30D158]'
+                      : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16 dark:bg-[#0A84FF]/18 dark:text-[#409CFF] dark:hover:bg-[#0A84FF]/26'
+                  "
+                >
+                  <Check v-if="copiedShare" class="w-3.5 h-3.5" />
+                  <Link2 v-else class="w-3.5 h-3.5" />
+                  <span>{{ copiedShare ? '分享链接已复制' : '复制房间分享链接' }}</span>
+                </button>
+              </div>
+              <div class="mt-3 flex flex-wrap items-center justify-center gap-2">
                 <button
                   v-for="starter in STARTER_PROMPTS"
                   :key="starter"

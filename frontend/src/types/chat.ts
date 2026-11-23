@@ -78,6 +78,34 @@ export interface OnlineUser {
   joinedAt: number;
 }
 
+export interface RoomInfo {
+  code: string;
+  name: string;
+  isPrivate: boolean;
+  onlineCount?: number;
+}
+
+export interface RoomLookupResult {
+  exists: boolean;
+  code?: string;
+  name?: string;
+  isPrivate?: boolean;
+  onlineCount?: number;
+}
+
+export interface CreateRoomPayload {
+  name: string;
+  isPrivate: boolean;
+  password?: string;
+}
+
+export interface JoinRoomPayload {
+  nickname: string;
+  avatarColor: AvatarColorKey;
+  roomCode: string;
+  password?: string;
+}
+
 export interface ChatMessage {
   id: string;
   type: 'text' | 'system';
@@ -93,17 +121,20 @@ export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecti
 export type ServerEvent =
   | {
       type: 'sync:init';
+      room: RoomInfo;
       self: OnlineUser;
       messages: ChatMessage[];
       onlineUsers: OnlineUser[];
     }
   | {
       type: 'message:new';
+      roomCode?: string;
       message: ChatMessage;
       clientTempId?: string;
     }
   | {
       type: 'presence:update';
+      roomCode?: string;
       onlineUsers: OnlineUser[];
     }
   | {
@@ -112,5 +143,6 @@ export type ServerEvent =
     }
   | {
       type: 'error';
+      code?: string;
       message: string;
     };

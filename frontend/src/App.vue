@@ -7,12 +7,12 @@ import {useTheme} from '@/composables/useTheme';
 // Initialize global theme synchronization
 useTheme();
 
-const {currentUser} = useChatSocket();
+const {currentUser, currentRoom} = useChatSocket();
 </script>
 
 <template>
   <Transition name="view-fade" mode="out-in">
-    <ChatView v-if="currentUser" key="chat" />
+    <ChatView v-if="currentUser && currentRoom" key="chat" />
     <LoginView v-else key="login" />
   </Transition>
 </template>

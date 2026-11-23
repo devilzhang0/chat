@@ -15,8 +15,9 @@ public class MessageService {
 
     private final MessageMapper messageMapper;
 
-    public Message save(String senderId, String nickname, String avatarColor, String content) {
+    public Message save(Long roomId, String senderId, String nickname, String avatarColor, String content) {
         Message message = new Message();
+        message.setRoomId(roomId);
         message.setSenderId(senderId);
         message.setNickname(nickname);
         message.setAvatarColor(avatarColor);
@@ -27,10 +28,11 @@ public class MessageService {
         return message;
     }
 
-    /** 最近 limit 条，按时间升序返回（旧→新） */
-    public List<Message> latest(int limit) {
+    /** 指定房间最近 limit 条，按时间升序返回（旧→新） */
+    public List<Message> latest(Long roomId, int limit) {
         List<Message> list = messageMapper.selectList(
                 new LambdaQueryWrapper<Message>()
+                        .eq(Message::getRoomId, roomId)
                         .orderByDesc(Message::getId)
                         .last("limit " + limit));
         Collections.reverse(list);

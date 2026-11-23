@@ -36,10 +36,10 @@ The app requires MySQL; the datasource (host, credentials) is in `src/main/resou
 
 Package root: `org.zz.mychat`.
 
-- `controller/` — `LoginController` (admin JWT login), `GuestAuthController` (`/api/auth/me` + `/api/auth/clear`), `HelloController` (event demo). Return `ApiResult<T>`.
-- `service/` — `GuestService` (anonymous identity: anonId + user upsert), `MessageService` (persist/load chat history), `UserDetailsServiceImpl` (admin lookup).
-- `mapper/` — MyBatis-Plus mappers (`UserMapper`, `MessageMapper` extend `BaseMapper`).
-- `domain/` — `User` (maps `user` table, implements `UserDetails`), `Message` (maps `message` table).
+- `controller/` — `LoginController` (admin JWT login), `GuestAuthController` (`/api/auth/me` + `/api/auth/clear`), `RoomController` (`/api/rooms` create + `/api/rooms/{code}` lookup), `HelloController` (event demo). Return `ApiResult<T>`.
+- `service/` — `GuestService` (anonymous identity: anonId + user upsert), `RoomService` (room creation, 6-digit code generation, BCrypt password verification), `MessageService` (persist/load chat history per room), `UserDetailsServiceImpl` (admin lookup).
+- `mapper/` — MyBatis-Plus mappers (`UserMapper`, `RoomMapper`, `MessageMapper` extend `BaseMapper`).
+- `domain/` — `User` (maps `user` table, implements `UserDetails`), `Room` (maps `room` table), `Message` (maps `message` table with `room_id`).
 - `config/` — `SecurityConfig`, `JwtConfig`, `SwaggerConfig`, `WebSocketConfig`.
 - `websocket/` — `ChatWebSocketHandler`, `OnlineUserManager`, `GuestUser`.
 - `common/` — `filter/JwtAuthFilter`, `utils/` (JWT, `ApiResult`), `enums/`.
@@ -55,8 +55,8 @@ Package root: `org.zz.mychat`.
 
 ### WebSocket protocol (frontend ↔ backend)
 
-Client → server: `join` `{nickname, avatarColor}`, `message:send` `{content, clientTempId}`, `ping`, `leave`.
-Server → client: `sync:init` `{self, messages, onlineUsers}`, `message:new` `{message, clientTempId?}`, `presence:update` `{onlineUsers}`, `pong` `{timestamp}`, `error` `{message}`.
+Client → server: `join` `{nickname, avatarColor, roomCode, password?}`, `message:send` `{content, clientTempId}`, `ping`, `leave`.
+Server → client: `sync:init` `{room, self, messages, onlineUsers}`, `message:new` `{roomCode, message, clientTempId?}`, `presence:update` `{roomCode, onlineUsers}`, `pong` `{timestamp}`, `error` `{code?, message}`.
 
 Wire message shape: `{id: string, type: "text"|"system", senderId: anonId, senderName, avatarColor, content, timestamp(ms)}`. Only `text` messages are persisted to `message`; `system` (join/leave) are broadcast ephemerally. Payloads are flat — there is no `data` wrapper on WS frames (unlike the REST `ApiResult`).
 

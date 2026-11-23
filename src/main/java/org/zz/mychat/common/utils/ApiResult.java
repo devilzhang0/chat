@@ -62,9 +62,23 @@ public class ApiResult<T> {
         return apiResult;
     }
 
+    public static <T> ApiResult<T> fail(Integer code, String msg) {
+        ApiResult<T> apiResult = new ApiResult<>();
+        apiResult.setSuccess(false);
+        apiResult.setCode(code);
+        apiResult.setMsg(msg);
+        return apiResult;
+    }
+
     public static <T> ApiResult<T> fail(String code, String msg, T data) {
-        ApiResult<T> apiResult = new ApiResult<T>();
-        apiResult.setSuccess(true);
+        ApiResult<T> apiResult = new ApiResult<>();
+        apiResult.setSuccess(false);
+        try {
+            apiResult.setCode(code != null ? Integer.valueOf(code) : 500);
+        } catch (NumberFormatException e) {
+            apiResult.setCode(500);
+        }
+        apiResult.setMsg(msg);
         apiResult.setData(data);
         return apiResult;
     }

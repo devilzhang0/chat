@@ -54,6 +54,11 @@ public class GuestAuthController {
         cookie.setHttpOnly(true);
         cookie.setMaxAge(0);
         response.addCookie(cookie);
+
+        Cookie recentCookie = new Cookie("recent_rooms", "");
+        recentCookie.setPath("/");
+        recentCookie.setMaxAge(0);
+        response.addCookie(recentCookie);
         return ApiResult.success();
     }
 

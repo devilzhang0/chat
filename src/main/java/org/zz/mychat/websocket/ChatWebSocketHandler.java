@@ -9,9 +9,12 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 import org.zz.mychat.domain.Message;
+import org.zz.mychat.domain.Room;
 import org.zz.mychat.domain.User;
 import org.zz.mychat.service.GuestService;
 import org.zz.mychat.service.MessageService;
+import org.zz.mychat.service.RoomService;
+import org.zz.mychat.websocket.OnlineUserManager.RoomSession;
 
 import java.util.ArrayDeque;
 import java.util.LinkedHashMap;
@@ -35,6 +38,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final OnlineUserManager onlineUserManager;
     private final MessageService messageService;
     private final GuestService guestService;
+    private final RoomService roomService;
     private final ObjectMapper objectMapper;
 
     private final Map<WebSocketSession, ArrayDeque<Long>> sendTimestamps = new ConcurrentHashMap<>();
@@ -58,19 +62,42 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void join(WebSocketSession session, JsonNode node) {
-        if (onlineUserManager.getUser(session) != null) {
-            send(session, syncInitPayload(session));
+        String roomCode = node.path("roomCode").asText("").trim();
+        if (roomCode.isEmpty()) {
+            send(session, errorPayload("ROOM_NOT_FOUND", "请输入房间号"));
             return;
+        }
+
+        RoomSession existing = onlineUserManager.getSession(session);
+        if (existing != null) {
+            if (existing.roomCode().equals(roomCode)) {
+                send(session, syncInitPayload(existing));
+                return;
+            }
+            leave(session);
         }
 
         String nickname = node.path("nickname").asText("").trim();
         int len = nickname.codePointCount(0, nickname.length());
         if (len < MIN_NICKNAME_LEN || len > MAX_NICKNAME_LEN) {
-            send(session, errorPayload("昵称长度需在 2 到 20 个字符之间"));
+            send(session, errorPayload("INVALID_NICKNAME", "昵称长度需在 2 到 20 个字符之间"));
             return;
         }
         String rawColor = node.path("avatarColor").asText("");
         String avatarColor = VALID_COLORS.contains(rawColor) ? rawColor : "indigo";
+
+        Room room = roomService.findByCode(roomCode);
+        if (room == null) {
+            send(session, errorPayload("ROOM_NOT_FOUND", "房间未创建"));
+            return;
+        }
+        if (room.isPrivateRoom()) {
+            String password = node.path("password").asText("");
+            if (!roomService.verifyPassword(room, password)) {
+                send(session, errorPayload("INVALID_PASSWORD", "房间密码错误"));
+                return;
+            }
+        }
 
         String anonId = (String) session.getAttributes().get("anonId");
         if (anonId == null || anonId.isBlank()) {
@@ -80,19 +107,29 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
         User user = guestService.upsert(anonId, nickname, avatarColor, ip);
         GuestUser guest = new GuestUser(user.getId(), anonId, nickname, avatarColor, System.currentTimeMillis(), ip);
-        onlineUserManager.add(session, guest);
 
-        send(session, syncInitPayload(session));
-        broadcast(messageNewPayload(systemMessage(guest, guest.getNickname() + " 加入了聊天室"), null), session);
-        broadcast(presencePayload(), session);
+        boolean alreadyInRoom = onlineUserManager.hasSessionInRoom(room.getId(), anonId);
+        RoomSession roomSession = new RoomSession(guest, room.getId(), room.getCode(), room.getName(), room.isPrivateRoom());
+        onlineUserManager.join(session, roomSession);
+
+        send(session, syncInitPayload(roomSession));
+        if (!alreadyInRoom) {
+            broadcastToRoom(
+                    room.getId(),
+                    messageNewPayload(room.getCode(), systemMessage(guest, guest.getNickname() + " 加入了聊天室"), null),
+                    session
+            );
+        }
+        broadcastToRoom(room.getId(), presencePayload(room.getId(), room.getCode()), session);
     }
 
     private void handleSend(WebSocketSession session, JsonNode node) {
-        GuestUser guest = onlineUserManager.getUser(session);
-        if (guest == null) {
-            send(session, errorPayload("会话未建立，请重新登录"));
+        RoomSession roomSession = onlineUserManager.getSession(session);
+        if (roomSession == null) {
+            send(session, errorPayload("NOT_JOINED", "会话未建立，请重新进入房间"));
             return;
         }
+        GuestUser guest = roomSession.user();
 
         long now = System.currentTimeMillis();
         ArrayDeque<Long> q = sendTimestamps.computeIfAbsent(session, k -> new ArrayDeque<>());
@@ -100,7 +137,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             q.pollFirst();
         }
         if (q.size() >= RATE_LIMIT_MAX) {
-            send(session, errorPayload("发送频繁，请稍后再试"));
+            send(session, errorPayload("RATE_LIMITED", "发送频繁，请稍后再试"));
             return;
         }
 
@@ -109,38 +146,71 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         if (content.codePointCount(0, content.length()) > MAX_MESSAGE_LEN) {
-            send(session, errorPayload("单条消息最多支持 " + MAX_MESSAGE_LEN + " 个字符"));
+            send(session, errorPayload("MESSAGE_TOO_LONG", "单条消息最多支持 " + MAX_MESSAGE_LEN + " 个字符"));
             return;
         }
         q.addLast(now);
 
-        Message saved = messageService.save(guest.getId(), guest.getNickname(), guest.getAvatarColor(), content);
+        Message saved = messageService.save(
+                roomSession.roomId(),
+                guest.getId(),
+                guest.getNickname(),
+                guest.getAvatarColor(),
+                content
+        );
         String clientTempId = node.hasNonNull("clientTempId") ? node.path("clientTempId").asText() : null;
-        broadcast(messageNewPayload(toWireMessage(saved), clientTempId), null);
+        broadcastToRoom(
+                roomSession.roomId(),
+                messageNewPayload(roomSession.roomCode(), toWireMessage(saved), clientTempId),
+                null
+        );
     }
 
     private void leave(WebSocketSession session) {
         sendTimestamps.remove(session);
-        GuestUser guest = onlineUserManager.remove(session);
-        if (guest != null) {
-            broadcast(messageNewPayload(systemMessage(guest, guest.getNickname() + " 离开了聊天室"), null), null);
-            broadcast(presencePayload(), null);
+        RoomSession removed = onlineUserManager.remove(session);
+        if (removed != null) {
+            boolean stillInRoom = onlineUserManager.hasSessionInRoom(removed.roomId(), removed.user().getId());
+            if (!stillInRoom) {
+                broadcastToRoom(
+                        removed.roomId(),
+                        messageNewPayload(
+                                removed.roomCode(),
+                                systemMessage(removed.user(), removed.user().getNickname() + " 离开了聊天室"),
+                                null
+                        ),
+                        null
+                );
+            }
+            broadcastToRoom(removed.roomId(), presencePayload(removed.roomId(), removed.roomCode()), null);
         }
     }
 
-    private Map<String, Object> syncInitPayload(WebSocketSession session) {
-        GuestUser self = onlineUserManager.getUser(session);
+    private Map<String, Object> syncInitPayload(RoomSession roomSession) {
+        Map<String, Object> room = new LinkedHashMap<>();
+        room.put("code", roomSession.roomCode());
+        room.put("name", roomSession.roomName());
+        room.put("isPrivate", roomSession.isPrivate());
+
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "sync:init");
-        payload.put("self", toWireUser(self));
-        payload.put("messages", messageService.latest(HISTORY_LIMIT).stream().map(this::toWireMessage).toList());
-        payload.put("onlineUsers", onlineUserManager.getOnlineUsers().stream().map(this::toWireUser).toList());
+        payload.put("room", room);
+        payload.put("self", toWireUser(roomSession.user()));
+        payload.put("messages", messageService.latest(roomSession.roomId(), HISTORY_LIMIT)
+                .stream()
+                .map(this::toWireMessage)
+                .toList());
+        payload.put("onlineUsers", onlineUserManager.getOnlineUsers(roomSession.roomId())
+                .stream()
+                .map(this::toWireUser)
+                .toList());
         return payload;
     }
 
-    private Map<String, Object> messageNewPayload(Map<String, Object> message, String clientTempId) {
+    private Map<String, Object> messageNewPayload(String roomCode, Map<String, Object> message, String clientTempId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "message:new");
+        payload.put("roomCode", roomCode);
         payload.put("message", message);
         if (clientTempId != null) {
             payload.put("clientTempId", clientTempId);
@@ -148,10 +218,14 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         return payload;
     }
 
-    private Map<String, Object> presencePayload() {
+    private Map<String, Object> presencePayload(Long roomId, String roomCode) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "presence:update");
-        payload.put("onlineUsers", onlineUserManager.getOnlineUsers().stream().map(this::toWireUser).toList());
+        payload.put("roomCode", roomCode);
+        payload.put("onlineUsers", onlineUserManager.getOnlineUsers(roomId)
+                .stream()
+                .map(this::toWireUser)
+                .toList());
         return payload;
     }
 
@@ -162,9 +236,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         return payload;
     }
 
-    private Map<String, Object> errorPayload(String message) {
+    private Map<String, Object> errorPayload(String code, String message) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "error");
+        if (code != null) {
+            payload.put("code", code);
+        }
         payload.put("message", message);
         return payload;
     }
@@ -204,20 +281,18 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     private void send(WebSocketSession session, Map<String, Object> payload) {
         try {
-            if (session.isOpen()) {
-                session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
-            }
+            onlineUserManager.sendText(session, objectMapper.writeValueAsString(payload));
         } catch (Exception ignored) {
         }
     }
 
-    private void broadcast(Map<String, Object> payload, WebSocketSession exclude) {
+    private void broadcastToRoom(Long roomId, Map<String, Object> payload, WebSocketSession exclude) {
         String json;
         try {
             json = objectMapper.writeValueAsString(payload);
         } catch (Exception e) {
             return;
         }
-        onlineUserManager.broadcast(json, exclude);
+        onlineUserManager.broadcastToRoom(roomId, json, exclude);
     }
 }

@@ -66,7 +66,7 @@ EXIT;
 mysql -u mychat -p test < src/main/resources/db/init.sql
 # 校验
 mysql -u mychat -p test -e "SHOW TABLES;"
-# 应看到 user、message 两张表
+# 应看到 user、room、message 三张表
 ```
 
 > `init.sql` 是「从零建表」；`schema.sql` 是给「已有 user 表的旧库加列」的迁移脚本，二者二选一，新机器用 `init.sql`。
