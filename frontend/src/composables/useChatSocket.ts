@@ -254,11 +254,14 @@ const messages = ref<ChatMessage[]>([]);
 const onlineUsers = ref<OnlineUser[]>([]);
 const status = ref<ConnectionStatus>('idle');
 const isLoadingHistory = ref(false);
+const hasMoreHistory = ref(false);
+const isLoadingMoreHistory = ref(false);
 const errorMessage = ref<string | null>(null);
 const errorCode = ref<string | null>(null);
 
 const HEARTBEAT_INTERVAL_MS = 25000;
 const PONG_TIMEOUT_MS = 10000;
+const HISTORY_PAGE_SIZE = 50;
 
 let socket: WebSocket | null = null;
 let shouldAutoReconnect = false;
@@ -266,6 +269,8 @@ let reconnectAttempt = 0;
 let reconnectTimer: number | null = null;
 let heartbeatTimer: number | null = null;
 let pongTimeoutTimer: number | null = null;
+let historyLoadTimeoutTimer: number | null = null;
+let pendingHistoryResolve: ((addedCount: number) => void) | null = null;
 let pendingJoin: JoinRoomPayload | null = null;
 let errorClearTimer: number | null = null;
 let lifecycleListenersBound = false;
@@ -290,6 +295,19 @@ function clearPongTimeout(): void {
   }
 }
 
+function finishPendingHistoryLoad(addedCount: number): void {
+  if (historyLoadTimeoutTimer !== null) {
+    window.clearTimeout(historyLoadTimeoutTimer);
+    historyLoadTimeoutTimer = null;
+  }
+  isLoadingMoreHistory.value = false;
+  if (pendingHistoryResolve) {
+    const resolver = pendingHistoryResolve;
+    pendingHistoryResolve = null;
+    resolver(addedCount);
+  }
+}
+
 function clearTimers(): void {
   if (reconnectTimer !== null) {
     window.clearTimeout(reconnectTimer);
@@ -300,6 +318,7 @@ function clearTimers(): void {
     heartbeatTimer = null;
   }
   clearPongTimeout();
+  finishPendingHistoryLoad(0);
 }
 
 function sendPing(): void {
@@ -392,7 +411,29 @@ function upsertMessageIdempotent(incoming: ChatMessage): void {
   messages.value.push(incoming);
 }
 
-function mergeHistoryIdempotent(serverMessages: ChatMessage[]): void {
+function mergeHistoryIdempotent(
+  serverMessages: ChatMessage[],
+  isSameRoomReconnect: boolean,
+  serverHasMore: boolean
+): void {
+  const serverIds = new Set(serverMessages.map((m) => m.id));
+  const hasOverlap =
+    isSameRoomReconnect &&
+    messages.value.length > 0 &&
+    messages.value.some((m) => serverIds.has(m.id));
+
+  if (hasOverlap) {
+    // 断线重连且历史衔接不断层：保留用户已向上翻阅的更早消息，仅补充断线期间的新消息
+    const existingIds = new Set(messages.value.map((m) => m.id));
+    for (const msg of serverMessages) {
+      if (!existingIds.has(msg.id)) {
+        existingIds.add(msg.id);
+        messages.value.push(msg);
+      }
+    }
+    return;
+  }
+
   const seen = new Set<string>();
   const deduped: ChatMessage[] = [];
   for (const msg of serverMessages) {
@@ -402,6 +443,23 @@ function mergeHistoryIdempotent(serverMessages: ChatMessage[]): void {
     }
   }
   messages.value = deduped;
+  hasMoreHistory.value = serverHasMore;
+}
+
+function prependHistoryIdempotent(olderMessages: ChatMessage[]): number {
+  if (olderMessages.length === 0) return 0;
+  const existingIds = new Set(messages.value.map((m) => m.id));
+  const uniqueOlder: ChatMessage[] = [];
+  for (const msg of olderMessages) {
+    if (!existingIds.has(msg.id)) {
+      existingIds.add(msg.id);
+      uniqueOlder.push(msg);
+    }
+  }
+  if (uniqueOlder.length > 0) {
+    messages.value = [...uniqueOlder, ...messages.value];
+  }
+  return uniqueOlder.length;
 }
 
 function scheduleReconnect(): void {
@@ -495,6 +553,9 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
 
       if (frame.type === 'sync:init') {
         window.clearTimeout(connectTimeout);
+        const isSameRoomReconnect = Boolean(
+          currentRoom.value && currentRoom.value.code === frame.room.code
+        );
         currentRoom.value = frame.room;
         currentUser.value = frame.self;
         lastProfile.value = {
@@ -502,9 +563,14 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
           avatarColor: frame.self.avatarColor,
         };
         onlineUsers.value = frame.onlineUsers;
-        mergeHistoryIdempotent(frame.messages);
+        mergeHistoryIdempotent(
+          frame.messages,
+          isSameRoomReconnect,
+          Boolean(frame.hasMoreHistory)
+        );
         status.value = 'connected';
         isLoadingHistory.value = false;
+        finishPendingHistoryLoad(0);
         reconnectAttempt = 0;
         errorMessage.value = null;
         errorCode.value = null;
@@ -512,6 +578,16 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
         setRoomCodeInUrl(frame.room.code);
         startHeartbeat();
         finish({ok: true});
+        return;
+      }
+
+      if (frame.type === 'history:page') {
+        if (frame.roomCode && currentRoom.value && frame.roomCode !== currentRoom.value.code) {
+          return;
+        }
+        const added = prependHistoryIdempotent(frame.messages);
+        hasMoreHistory.value = Boolean(frame.hasMore);
+        finishPendingHistoryLoad(added);
         return;
       }
 
@@ -533,6 +609,7 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
 
       if (frame.type === 'error') {
         window.clearTimeout(connectTimeout);
+        finishPendingHistoryLoad(0);
         setTransientError(frame.message, frame.code ?? null);
         const stopReconnectCodes = new Set([
           'ROOM_NOT_FOUND',
@@ -572,6 +649,7 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
         heartbeatTimer = null;
       }
       clearPongTimeout();
+      finishPendingHistoryLoad(0);
       if (!settled) {
         isLoadingHistory.value = false;
         finish({ok: false, message: '连接已关闭'});
@@ -631,6 +709,45 @@ export function useChatSocket() {
     return true;
   }
 
+  function loadOlderHistory(): Promise<number> {
+    if (
+      !hasMoreHistory.value ||
+      isLoadingMoreHistory.value ||
+      !socket ||
+      socket.readyState !== WebSocket.OPEN
+    ) {
+      return Promise.resolve(0);
+    }
+
+    const oldestPersisted = messages.value.find(
+      (m) => m.type === 'text' && /^\d+$/.test(m.id)
+    );
+    if (!oldestPersisted) {
+      hasMoreHistory.value = false;
+      return Promise.resolve(0);
+    }
+
+    isLoadingMoreHistory.value = true;
+    return new Promise((resolve) => {
+      pendingHistoryResolve = resolve;
+      historyLoadTimeoutTimer = window.setTimeout(() => {
+        finishPendingHistoryLoad(0);
+      }, 8000);
+
+      try {
+        socket!.send(
+          JSON.stringify({
+            type: 'history:load',
+            beforeId: oldestPersisted.id,
+            limit: HISTORY_PAGE_SIZE,
+          })
+        );
+      } catch {
+        finishPendingHistoryLoad(0);
+      }
+    });
+  }
+
   function manualReconnect(): void {
     if (!pendingJoin) return;
     clearTimers();
@@ -666,6 +783,8 @@ export function useChatSocket() {
     messages.value = [];
     status.value = 'idle';
     isLoadingHistory.value = false;
+    hasMoreHistory.value = false;
+    isLoadingMoreHistory.value = false;
     errorMessage.value = null;
     errorCode.value = null;
     setRoomCodeInUrl(null);
@@ -688,10 +807,13 @@ export function useChatSocket() {
     onlineUsers,
     status,
     isLoadingHistory,
+    hasMoreHistory,
+    isLoadingMoreHistory,
     errorMessage,
     errorCode,
     joinRoom,
     sendMessage,
+    loadOlderHistory,
     manualReconnect,
     leaveRoom,
     clearError,
