@@ -257,13 +257,18 @@ const isLoadingHistory = ref(false);
 const errorMessage = ref<string | null>(null);
 const errorCode = ref<string | null>(null);
 
+const HEARTBEAT_INTERVAL_MS = 25000;
+const PONG_TIMEOUT_MS = 10000;
+
 let socket: WebSocket | null = null;
 let shouldAutoReconnect = false;
 let reconnectAttempt = 0;
 let reconnectTimer: number | null = null;
 let heartbeatTimer: number | null = null;
+let pongTimeoutTimer: number | null = null;
 let pendingJoin: JoinRoomPayload | null = null;
 let errorClearTimer: number | null = null;
+let lifecycleListenersBound = false;
 
 function setTransientError(msg: string, code: string | null = null): void {
   errorMessage.value = msg;
@@ -278,6 +283,13 @@ function setTransientError(msg: string, code: string | null = null): void {
   }, 4500);
 }
 
+function clearPongTimeout(): void {
+  if (pongTimeoutTimer !== null) {
+    window.clearTimeout(pongTimeoutTimer);
+    pongTimeoutTimer = null;
+  }
+}
+
 function clearTimers(): void {
   if (reconnectTimer !== null) {
     window.clearTimeout(reconnectTimer);
@@ -287,17 +299,71 @@ function clearTimers(): void {
     window.clearInterval(heartbeatTimer);
     heartbeatTimer = null;
   }
+  clearPongTimeout();
+}
+
+function sendPing(): void {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  try {
+    socket.send(JSON.stringify({type: 'ping'}));
+  } catch {
+    return;
+  }
+  if (pongTimeoutTimer === null) {
+    const activeSocket = socket;
+    pongTimeoutTimer = window.setTimeout(() => {
+      pongTimeoutTimer = null;
+      if (socket === activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+        // 心跳超时未收到服务端回执，主动关闭半开连接以触发自动重连
+        try {
+          activeSocket.close();
+        } catch {
+          // ignore
+        }
+      }
+    }, PONG_TIMEOUT_MS);
+  }
 }
 
 function startHeartbeat(): void {
   if (heartbeatTimer !== null) {
     window.clearInterval(heartbeatTimer);
   }
+  clearPongTimeout();
   heartbeatTimer = window.setInterval(() => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({type: 'ping'}));
+    sendPing();
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function handleWakeUp(): void {
+  if (!shouldAutoReconnect || !pendingJoin) return;
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    sendPing();
+    return;
+  }
+  if (status.value !== 'connecting') {
+    clearTimers();
+    reconnectAttempt = 0;
+    status.value = 'reconnecting';
+    openSocket(pendingJoin, false).then((res) => {
+      if (!res.ok && shouldAutoReconnect) {
+        scheduleReconnect();
+      }
+    });
+  }
+}
+
+function bindLifecycleListeners(): void {
+  if (lifecycleListenersBound || typeof window === 'undefined') return;
+  lifecycleListenersBound = true;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      handleWakeUp();
     }
-  }, 25000);
+  });
+  window.addEventListener('online', () => {
+    handleWakeUp();
+  });
 }
 
 function getWebSocketUrl(): string {
@@ -415,10 +481,15 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
     };
 
     ws.onmessage = (event) => {
+      clearPongTimeout();
       let frame: ServerEvent;
       try {
         frame = JSON.parse(String(event.data)) as ServerEvent;
       } catch {
+        return;
+      }
+
+      if (frame.type === 'pong') {
         return;
       }
 
@@ -500,6 +571,7 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
         window.clearInterval(heartbeatTimer);
         heartbeatTimer = null;
       }
+      clearPongTimeout();
       if (!settled) {
         isLoadingHistory.value = false;
         finish({ok: false, message: '连接已关闭'});
@@ -516,6 +588,8 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
 }
 
 export function useChatSocket() {
+  bindLifecycleListeners();
+
   async function joinRoom(payload: JoinRoomPayload): Promise<JoinResult> {
     const normalized: JoinRoomPayload = {
       nickname: payload.nickname.trim(),

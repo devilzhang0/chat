@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -20,10 +22,12 @@ import org.zz.mychat.service.RoomService;
 import org.zz.mychat.websocket.OnlineUserManager.RoomSession;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class ChatWebSocketHandler extends TextWebSocketHandler {
@@ -34,6 +38,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private static final int MAX_MESSAGE_LEN = 500;
     private static final int MAX_PAYLOAD_BYTES = 4096;
     private static final int TRANSPORT_BUFFER_BYTES = 8192;
+    private static final long HEARTBEAT_TIMEOUT_MS = 90_000L;
+    private static final long UNJOINED_TIMEOUT_MS = 30_000L;
+    private static final long ZOMBIE_SCAN_INTERVAL_MS = 30_000L;
+    private static final CloseStatus HEARTBEAT_TIMEOUT_CLOSE = new CloseStatus(4000, "Heartbeat timeout");
     private static final Set<String> VALID_COLORS = Set.of("indigo", "slate", "emerald", "amber", "rose", "cyan");
 
     private final OnlineUserManager onlineUserManager;
@@ -55,6 +63,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        onlineUserManager.touch(session);
         if (message.getPayloadLength() > MAX_PAYLOAD_BYTES) {
             send(session, errorPayload("PAYLOAD_TOO_LARGE", "单次请求数据过大"));
             return;
@@ -77,9 +86,38 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     @Override
+    public void handleTransportError(WebSocketSession session, Throwable exception) {
+        evictSession(session, CloseStatus.SERVER_ERROR);
+    }
+
+    @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         onlineUserManager.unregisterConnection(session);
         leave(session);
+    }
+
+    /** 定时扫描并清理超时未心跳 / 已失效的僵尸连接，保证在线成员列表准确 */
+    @Scheduled(fixedDelay = ZOMBIE_SCAN_INTERVAL_MS)
+    public void cleanZombieSessions() {
+        List<WebSocketSession> zombies = onlineUserManager.findZombieSessions(HEARTBEAT_TIMEOUT_MS, UNJOINED_TIMEOUT_MS);
+        if (zombies.isEmpty()) {
+            return;
+        }
+        log.info("Cleaning {} zombie WebSocket session(s)", zombies.size());
+        for (WebSocketSession zombie : zombies) {
+            evictSession(zombie, HEARTBEAT_TIMEOUT_CLOSE);
+        }
+    }
+
+    private void evictSession(WebSocketSession session, CloseStatus closeStatus) {
+        onlineUserManager.unregisterConnection(session);
+        leave(session);
+        if (session != null && session.isOpen()) {
+            try {
+                session.close(closeStatus);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private void join(WebSocketSession session, JsonNode node) {
