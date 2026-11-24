@@ -16,6 +16,7 @@ import org.zz.mychat.domain.Room;
 import org.zz.mychat.domain.User;
 import org.zz.mychat.service.GuestService;
 import org.zz.mychat.service.MessageService;
+import org.zz.mychat.service.MessageService.HistoryPage;
 import org.zz.mychat.service.RateLimitService;
 import org.zz.mychat.service.RateLimitService.RateLimitResult;
 import org.zz.mychat.service.RoomService;
@@ -32,7 +33,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ChatWebSocketHandler extends TextWebSocketHandler {
 
-    private static final int HISTORY_LIMIT = 100;
+    private static final int INITIAL_HISTORY_LIMIT = 50;
+    private static final int HISTORY_PAGE_LIMIT = 50;
     private static final int MIN_NICKNAME_LEN = 2;
     private static final int MAX_NICKNAME_LEN = 20;
     private static final int MAX_MESSAGE_LEN = 500;
@@ -81,6 +83,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             case "leave" -> leave(session);
             case "join" -> join(session, node);
             case "message:send" -> handleSend(session, node);
+            case "history:load" -> handleHistoryLoad(session, node);
             default -> { }
         }
     }
@@ -234,6 +237,30 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         );
     }
 
+    private void handleHistoryLoad(WebSocketSession session, JsonNode node) {
+        RoomSession roomSession = onlineUserManager.getSession(session);
+        if (roomSession == null) {
+            send(session, errorPayload("NOT_JOINED", "会话未建立，请重新进入房间"));
+            return;
+        }
+        RateLimitResult limitResult = rateLimitService.checkHistoryLoad(roomSession.user().getId());
+        if (!limitResult.allowed()) {
+            send(session, errorPayload("RATE_LIMITED", limitResult.message()));
+            return;
+        }
+
+        long beforeId;
+        try {
+            beforeId = Long.parseLong(node.path("beforeId").asText("").trim());
+        } catch (NumberFormatException e) {
+            send(session, historyPagePayload(roomSession.roomCode(), new HistoryPage(List.of(), false)));
+            return;
+        }
+        int reqLimit = node.path("limit").asInt(HISTORY_PAGE_LIMIT);
+        HistoryPage page = messageService.beforePage(roomSession.roomId(), beforeId, reqLimit);
+        send(session, historyPagePayload(roomSession.roomCode(), page));
+    }
+
     private void leave(WebSocketSession session) {
         RoomSession removed = onlineUserManager.remove(session);
         if (removed != null) {
@@ -259,18 +286,33 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         room.put("name", roomSession.roomName());
         room.put("isPrivate", roomSession.isPrivate());
 
+        HistoryPage historyPage = messageService.latestPage(roomSession.roomId(), INITIAL_HISTORY_LIMIT);
+
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "sync:init");
         payload.put("room", room);
         payload.put("self", toWireUser(roomSession.user()));
-        payload.put("messages", messageService.latest(roomSession.roomId(), HISTORY_LIMIT)
+        payload.put("messages", historyPage.messages()
                 .stream()
                 .map(this::toWireMessage)
                 .toList());
+        payload.put("hasMoreHistory", historyPage.hasMore());
         payload.put("onlineUsers", onlineUserManager.getOnlineUsers(roomSession.roomId())
                 .stream()
                 .map(this::toWireUser)
                 .toList());
+        return payload;
+    }
+
+    private Map<String, Object> historyPagePayload(String roomCode, HistoryPage page) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "history:page");
+        payload.put("roomCode", roomCode);
+        payload.put("messages", page.messages()
+                .stream()
+                .map(this::toWireMessage)
+                .toList());
+        payload.put("hasMore", page.hasMore());
         return payload;
     }
 

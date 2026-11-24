@@ -7,6 +7,7 @@ import {
   Check,
   Copy,
   Link2,
+  Loader2,
   Lock,
   LogOut,
   MessageSquare,
@@ -28,8 +29,11 @@ const {
   onlineUsers,
   status,
   isLoadingHistory,
+  hasMoreHistory,
+  isLoadingMoreHistory,
   errorMessage,
   sendMessage,
+  loadOlderHistory,
   manualReconnect,
   leaveRoom,
   clearError,
@@ -41,6 +45,7 @@ const showMobileUsers = ref(false);
 const isComposing = ref(false);
 const isAtBottom = ref(true);
 const unreadBelowCount = ref(0);
+const isInitialScrollReady = ref(false);
 const copiedShare = ref(false);
 const copiedCode = ref(false);
 let copiedShareTimer: number | null = null;
@@ -185,6 +190,22 @@ function scrollToBottom(smooth = false): void {
   unreadBelowCount.value = 0;
 }
 
+async function handleLoadOlderHistory(): Promise<void> {
+  if (!hasMoreHistory.value || isLoadingMoreHistory.value || status.value !== 'connected') {
+    return;
+  }
+  const el = scrollContainerRef.value;
+  const prevScrollHeight = el ? el.scrollHeight : 0;
+  const prevScrollTop = el ? el.scrollTop : 0;
+
+  const added = await loadOlderHistory();
+  if (added > 0 && el) {
+    await nextTick();
+    const heightDelta = el.scrollHeight - prevScrollHeight;
+    el.scrollTop = prevScrollTop + heightDelta;
+  }
+}
+
 function handleScroll(): void {
   const el = scrollContainerRef.value;
   if (!el) return;
@@ -193,6 +214,15 @@ function handleScroll(): void {
   isAtBottom.value = nearBottom;
   if (nearBottom) {
     unreadBelowCount.value = 0;
+  }
+  if (
+    isInitialScrollReady.value &&
+    el.scrollTop <= 80 &&
+    hasMoreHistory.value &&
+    !isLoadingMoreHistory.value &&
+    status.value === 'connected'
+  ) {
+    void handleLoadOlderHistory();
   }
 }
 
@@ -252,10 +282,19 @@ function insertEmoji(emoji: string): void {
 }
 
 watch(
-  () => messages.value.length,
-  (newLen, oldLen) => {
-    if (newLen === 0) return;
-    const latest = messages.value[newLen - 1];
+  () => ({
+    len: messages.value.length,
+    lastId: messages.value.length > 0 ? messages.value[messages.value.length - 1].id : null,
+  }),
+  (next, prev) => {
+    if (next.len === 0) return;
+    // 顶部向上分页插入历史消息时，队尾 lastId 不变，不触发滚底和未读计数
+    if (prev && prev.len > 0 && next.lastId === prev.lastId) {
+      return;
+    }
+
+    const oldLen = prev ? prev.len : 0;
+    const latest = messages.value[next.len - 1];
     const isSelfLatest = Boolean(
       latest && currentUser.value && latest.senderId === currentUser.value.id && latest.type === 'text'
     );
@@ -263,8 +302,8 @@ watch(
     nextTick(() => {
       if (oldLen === 0 || isAtBottom.value || isSelfLatest) {
         scrollToBottom(oldLen > 0);
-      } else if (newLen > oldLen) {
-        unreadBelowCount.value += newLen - oldLen;
+      } else if (next.len > oldLen) {
+        unreadBelowCount.value += next.len - oldLen;
       }
     });
   }
@@ -273,6 +312,7 @@ watch(
 onMounted(() => {
   nextTick(() => {
     scrollToBottom(false);
+    isInitialScrollReady.value = true;
     textareaRef.value?.focus();
   });
 });
@@ -480,6 +520,32 @@ onMounted(() => {
 
             <!-- Populated timeline -->
             <template v-else>
+              <!-- History pagination header -->
+              <div class="mb-4 flex items-center justify-center select-none">
+                <div
+                  v-if="isLoadingMoreHistory"
+                  class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[12px] text-[#636366] dark:text-[#98989F] bg-black/[0.04] dark:bg-white/[0.07]"
+                >
+                  <Loader2 class="w-3.5 h-3.5 animate-spin text-[#007AFF] dark:text-[#0A84FF]" />
+                  <span>正在加载更早的消息...</span>
+                </div>
+                <button
+                  v-else-if="hasMoreHistory"
+                  type="button"
+                  @click="handleLoadOlderHistory"
+                  :disabled="status !== 'connected'"
+                  class="px-3.5 py-1 rounded-full text-[12px] font-medium text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#409CFF] dark:hover:bg-[#0A84FF]/15 transition-colors disabled:opacity-45 cursor-pointer"
+                >
+                  加载更早的消息
+                </button>
+                <span
+                  v-else
+                  class="text-[11px] text-[#8E8E93]/80"
+                >
+                  已显示全部历史消息
+                </span>
+              </div>
+
               <template v-for="item in renderItems" :key="item.key">
                 <!-- iOS Date Divider -->
                 <div

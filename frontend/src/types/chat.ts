@@ -124,7 +124,14 @@ export type ServerEvent =
       room: RoomInfo;
       self: OnlineUser;
       messages: ChatMessage[];
+      hasMoreHistory?: boolean;
       onlineUsers: OnlineUser[];
+    }
+  | {
+      type: 'history:page';
+      roomCode?: string;
+      messages: ChatMessage[];
+      hasMore: boolean;
     }
   | {
       type: 'message:new';
