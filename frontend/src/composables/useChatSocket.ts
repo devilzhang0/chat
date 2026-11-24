@@ -65,12 +65,13 @@ function readRecentRoomCodesFromCookie(): string[] {
 function writeRecentRoomCodesToCookie(codes: string[]): void {
   try {
     const cleaned = codes.map((c) => c.trim()).filter(Boolean).slice(0, MAX_RECENT_ROOMS);
+    const secureAttr = window.location.protocol === 'https:' ? '; Secure' : '';
     if (cleaned.length === 0) {
-      document.cookie = `${RECENT_ROOMS_COOKIE}=; path=/; max-age=0; SameSite=Lax`;
+      document.cookie = `${RECENT_ROOMS_COOKIE}=; path=/; max-age=0; SameSite=Lax${secureAttr}`;
       return;
     }
     const value = encodeURIComponent(cleaned.join('-'));
-    document.cookie = `${RECENT_ROOMS_COOKIE}=${value}; path=/; max-age=${RECENT_ROOMS_MAX_AGE}; SameSite=Lax`;
+    document.cookie = `${RECENT_ROOMS_COOKIE}=${value}; path=/; max-age=${RECENT_ROOMS_MAX_AGE}; SameSite=Lax${secureAttr}`;
   } catch {
     // ignore
   }
@@ -462,7 +463,13 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
       if (frame.type === 'error') {
         window.clearTimeout(connectTimeout);
         setTransientError(frame.message, frame.code ?? null);
-        if (frame.code === 'ROOM_NOT_FOUND' || frame.code === 'INVALID_PASSWORD') {
+        const stopReconnectCodes = new Set([
+          'ROOM_NOT_FOUND',
+          'INVALID_PASSWORD',
+          'PASSWORD_LOCKED',
+          'CONNECTION_LIMIT',
+        ]);
+        if ((frame.code && stopReconnectCodes.has(frame.code)) || (!settled && frame.code === 'RATE_LIMITED')) {
           shouldAutoReconnect = false;
         }
         if (!settled) {

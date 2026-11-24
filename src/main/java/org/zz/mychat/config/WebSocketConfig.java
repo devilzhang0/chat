@@ -2,6 +2,7 @@ package org.zz.mychat.config;
 
 import jakarta.servlet.http.Cookie;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
@@ -11,10 +12,10 @@ import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 import org.springframework.web.socket.server.HandshakeInterceptor;
+import org.zz.mychat.common.utils.ClientIpUtils;
 import org.zz.mychat.service.GuestService;
 import org.zz.mychat.websocket.ChatWebSocketHandler;
 
-import java.util.List;
 import java.util.Map;
 
 @Configuration
@@ -24,6 +25,9 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
     private final ChatWebSocketHandler chatWebSocketHandler;
     private final GuestService guestService;
+
+    @Value("${mychat.security.allowed-origin-patterns:*}")
+    private String[] allowedOriginPatterns;
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
@@ -37,7 +41,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
                             anonId = guestService.newAnonId();
                         }
                         attributes.put("anonId", anonId);
-                        attributes.put("ip", clientIp(request));
+                        attributes.put("ip", ClientIpUtils.resolve(request));
                         return true;
                     }
 
@@ -46,7 +50,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
                                                WebSocketHandler wsHandler, Exception exception) {
                     }
                 })
-                .setAllowedOrigins("*");
+                .setAllowedOriginPatterns(allowedOriginPatterns);
     }
 
     private String cookieValue(ServerHttpRequest request, String name) {
@@ -59,19 +63,6 @@ public class WebSocketConfig implements WebSocketConfigurer {
                     }
                 }
             }
-        }
-        return null;
-    }
-
-    private String clientIp(ServerHttpRequest request) {
-        List<String> xff = request.getHeaders().get("X-Forwarded-For");
-        if (xff != null && !xff.isEmpty()) {
-            String first = xff.get(0);
-            int comma = first.indexOf(',');
-            return (comma > 0 ? first.substring(0, comma) : first).trim();
-        }
-        if (request.getRemoteAddress() != null) {
-            return request.getRemoteAddress().getAddress().getHostAddress();
         }
         return null;
     }

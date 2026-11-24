@@ -10,9 +10,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Component
 public class OnlineUserManager {
+
+    private static final int MAX_CONNECTIONS_PER_IP = 20;
 
     public record RoomSession(
             GuestUser user,
@@ -25,6 +29,41 @@ public class OnlineUserManager {
 
     private final Map<WebSocketSession, RoomSession> sessions = new ConcurrentHashMap<>();
     private final Map<Long, Set<WebSocketSession>> roomSessions = new ConcurrentHashMap<>();
+    private final Map<WebSocketSession, String> connectedIps = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> ipConnectionCounts = new ConcurrentHashMap<>();
+
+    /** 注册新连接并校验单 IP 并发连接数上限 */
+    public boolean registerConnection(WebSocketSession session, String ip) {
+        String safeIp = (ip == null || ip.isBlank()) ? "unknown" : ip.trim();
+        AtomicBoolean admitted = new AtomicBoolean(false);
+        ipConnectionCounts.compute(safeIp, (k, counter) -> {
+            if (counter == null) {
+                admitted.set(true);
+                return new AtomicInteger(1);
+            }
+            if (counter.get() >= MAX_CONNECTIONS_PER_IP) {
+                return counter;
+            }
+            counter.incrementAndGet();
+            admitted.set(true);
+            return counter;
+        });
+        if (admitted.get()) {
+            connectedIps.put(session, safeIp);
+        }
+        return admitted.get();
+    }
+
+    /** 释放连接对应的 IP 并发计数（幂等） */
+    public void unregisterConnection(WebSocketSession session) {
+        String ip = connectedIps.remove(session);
+        if (ip == null) {
+            return;
+        }
+        ipConnectionCounts.computeIfPresent(ip, (k, counter) ->
+                counter.decrementAndGet() <= 0 ? null : counter
+        );
+    }
 
     public void join(WebSocketSession session, RoomSession roomSession) {
         remove(session);

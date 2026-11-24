@@ -4,11 +4,14 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseCookie;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.zz.mychat.common.utils.ApiResult;
+import org.zz.mychat.common.utils.ClientIpUtils;
 import org.zz.mychat.domain.User;
 import org.zz.mychat.service.GuestService;
 
@@ -21,6 +24,7 @@ import java.util.Map;
 public class GuestAuthController {
 
     private static final String COOKIE_NAME = "guest_id";
+    private static final String RECENT_ROOMS_COOKIE = "recent_rooms";
     private static final int COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 天
 
     private final GuestService guestService;
@@ -31,7 +35,7 @@ public class GuestAuthController {
         String anonId = cookieValue(request, COOKIE_NAME);
         Map<String, Object> data = new HashMap<>();
         if (anonId == null || anonId.isBlank()) {
-            addCookie(response, guestService.newAnonId());
+            addCookie(request, response, COOKIE_NAME, guestService.newAnonId(), true, COOKIE_MAX_AGE);
             data.put("found", false);
             return ApiResult.success(data);
         }
@@ -48,17 +52,9 @@ public class GuestAuthController {
 
     /** 清除身份 cookie（忘记当前设备上的身份；不删除用户记录与历史） */
     @PostMapping("/clear")
-    public ApiResult<Void> clear(HttpServletResponse response) {
-        Cookie cookie = new Cookie(COOKIE_NAME, "");
-        cookie.setPath("/");
-        cookie.setHttpOnly(true);
-        cookie.setMaxAge(0);
-        response.addCookie(cookie);
-
-        Cookie recentCookie = new Cookie("recent_rooms", "");
-        recentCookie.setPath("/");
-        recentCookie.setMaxAge(0);
-        response.addCookie(recentCookie);
+    public ApiResult<Void> clear(HttpServletRequest request, HttpServletResponse response) {
+        addCookie(request, response, COOKIE_NAME, "", true, 0);
+        addCookie(request, response, RECENT_ROOMS_COOKIE, "", false, 0);
         return ApiResult.success();
     }
 
@@ -75,11 +71,15 @@ public class GuestAuthController {
         return null;
     }
 
-    private void addCookie(HttpServletResponse response, String value) {
-        Cookie cookie = new Cookie(COOKIE_NAME, value);
-        cookie.setPath("/");
-        cookie.setHttpOnly(true);
-        cookie.setMaxAge(COOKIE_MAX_AGE);
-        response.addCookie(cookie);
+    private void addCookie(HttpServletRequest request, HttpServletResponse response,
+                           String name, String value, boolean httpOnly, long maxAge) {
+        ResponseCookie cookie = ResponseCookie.from(name, value)
+                .path("/")
+                .httpOnly(httpOnly)
+                .secure(ClientIpUtils.isHttps(request))
+                .sameSite("Lax")
+                .maxAge(maxAge)
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
     }
 }

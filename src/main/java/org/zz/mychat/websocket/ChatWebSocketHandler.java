@@ -1,5 +1,6 @@
 package org.zz.mychat.websocket;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -13,15 +14,15 @@ import org.zz.mychat.domain.Room;
 import org.zz.mychat.domain.User;
 import org.zz.mychat.service.GuestService;
 import org.zz.mychat.service.MessageService;
+import org.zz.mychat.service.RateLimitService;
+import org.zz.mychat.service.RateLimitService.RateLimitResult;
 import org.zz.mychat.service.RoomService;
 import org.zz.mychat.websocket.OnlineUserManager.RoomSession;
 
-import java.util.ArrayDeque;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 @RequiredArgsConstructor
@@ -31,21 +32,40 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private static final int MIN_NICKNAME_LEN = 2;
     private static final int MAX_NICKNAME_LEN = 20;
     private static final int MAX_MESSAGE_LEN = 500;
-    private static final long RATE_LIMIT_WINDOW_MS = 10000;
-    private static final int RATE_LIMIT_MAX = 10;
+    private static final int MAX_PAYLOAD_BYTES = 4096;
+    private static final int TRANSPORT_BUFFER_BYTES = 8192;
     private static final Set<String> VALID_COLORS = Set.of("indigo", "slate", "emerald", "amber", "rose", "cyan");
 
     private final OnlineUserManager onlineUserManager;
     private final MessageService messageService;
     private final GuestService guestService;
     private final RoomService roomService;
+    private final RateLimitService rateLimitService;
     private final ObjectMapper objectMapper;
 
-    private final Map<WebSocketSession, ArrayDeque<Long>> sendTimestamps = new ConcurrentHashMap<>();
+    @Override
+    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        session.setTextMessageSizeLimit(TRANSPORT_BUFFER_BYTES);
+        String ip = (String) session.getAttributes().get("ip");
+        if (!onlineUserManager.registerConnection(session, ip)) {
+            send(session, errorPayload("CONNECTION_LIMIT", "当前网络并发连接数过多，请稍后再试"));
+            session.close(CloseStatus.POLICY_VIOLATION);
+        }
+    }
 
     @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
-        JsonNode node = objectMapper.readTree(message.getPayload());
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        if (message.getPayloadLength() > MAX_PAYLOAD_BYTES) {
+            send(session, errorPayload("PAYLOAD_TOO_LARGE", "单次请求数据过大"));
+            return;
+        }
+        JsonNode node;
+        try {
+            node = objectMapper.readTree(message.getPayload());
+        } catch (JsonProcessingException e) {
+            send(session, errorPayload("INVALID_PAYLOAD", "消息格式无效"));
+            return;
+        }
         String type = node.path("type").asText("");
         switch (type) {
             case "ping" -> send(session, pongPayload());
@@ -58,10 +78,18 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        onlineUserManager.unregisterConnection(session);
         leave(session);
     }
 
     private void join(WebSocketSession session, JsonNode node) {
+        String ip = (String) session.getAttributes().get("ip");
+        RateLimitResult joinLimit = rateLimitService.checkWsJoin(ip);
+        if (!joinLimit.allowed()) {
+            send(session, errorPayload("RATE_LIMITED", joinLimit.message()));
+            return;
+        }
+
         String roomCode = node.path("roomCode").asText("").trim();
         if (roomCode.isEmpty()) {
             send(session, errorPayload("ROOM_NOT_FOUND", "请输入房间号"));
@@ -86,24 +114,31 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         String rawColor = node.path("avatarColor").asText("");
         String avatarColor = VALID_COLORS.contains(rawColor) ? rawColor : "indigo";
 
+        String anonId = (String) session.getAttributes().get("anonId");
+        if (anonId == null || anonId.isBlank()) {
+            anonId = guestService.newAnonId();
+        }
+
         Room room = roomService.findByCode(roomCode);
         if (room == null) {
             send(session, errorPayload("ROOM_NOT_FOUND", "房间未创建"));
             return;
         }
         if (room.isPrivateRoom()) {
-            String password = node.path("password").asText("");
-            if (!roomService.verifyPassword(room, password)) {
-                send(session, errorPayload("INVALID_PASSWORD", "房间密码错误"));
+            RateLimitResult lockCheck = rateLimitService.checkPasswordLock(room.getCode(), ip, anonId);
+            if (!lockCheck.allowed()) {
+                send(session, errorPayload("PASSWORD_LOCKED", lockCheck.message()));
                 return;
             }
+            String password = node.path("password").asText("");
+            if (!roomService.verifyPassword(room, password)) {
+                RateLimitResult fail = rateLimitService.recordPasswordFailure(room.getCode(), ip, anonId);
+                String errCode = fail.allowed() ? "INVALID_PASSWORD" : "PASSWORD_LOCKED";
+                send(session, errorPayload(errCode, fail.message()));
+                return;
+            }
+            rateLimitService.clearPasswordFailure(room.getCode(), ip, anonId);
         }
-
-        String anonId = (String) session.getAttributes().get("anonId");
-        if (anonId == null || anonId.isBlank()) {
-            anonId = guestService.newAnonId();
-        }
-        String ip = (String) session.getAttributes().get("ip");
 
         User user = guestService.upsert(anonId, nickname, avatarColor, ip);
         GuestUser guest = new GuestUser(user.getId(), anonId, nickname, avatarColor, System.currentTimeMillis(), ip);
@@ -131,16 +166,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         }
         GuestUser guest = roomSession.user();
 
-        long now = System.currentTimeMillis();
-        ArrayDeque<Long> q = sendTimestamps.computeIfAbsent(session, k -> new ArrayDeque<>());
-        while (!q.isEmpty() && now - q.peekFirst() > RATE_LIMIT_WINDOW_MS) {
-            q.pollFirst();
-        }
-        if (q.size() >= RATE_LIMIT_MAX) {
-            send(session, errorPayload("RATE_LIMITED", "发送频繁，请稍后再试"));
-            return;
-        }
-
         String content = node.path("content").asText("").trim();
         if (content.isEmpty()) {
             return;
@@ -149,7 +174,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             send(session, errorPayload("MESSAGE_TOO_LONG", "单条消息最多支持 " + MAX_MESSAGE_LEN + " 个字符"));
             return;
         }
-        q.addLast(now);
+
+        RateLimitResult msgLimit = rateLimitService.checkSendMessage(guest.getId(), guest.getIp());
+        if (!msgLimit.allowed()) {
+            send(session, errorPayload("RATE_LIMITED", msgLimit.message()));
+            return;
+        }
 
         Message saved = messageService.save(
                 roomSession.roomId(),
@@ -167,7 +197,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void leave(WebSocketSession session) {
-        sendTimestamps.remove(session);
         RoomSession removed = onlineUserManager.remove(session);
         if (removed != null) {
             boolean stillInRoom = onlineUserManager.hasSessionInRoom(removed.roomId(), removed.user().getId());
