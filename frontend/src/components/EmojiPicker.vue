@@ -555,7 +555,7 @@ onBeforeUnmount(() => {
         v-model="searchQuery"
         type="text"
         placeholder="搜索表情（如：笑、赞、奶茶、猫）"
-        class="w-full h-8 pl-8 pr-7 rounded-[10px] text-[12px] bg-black/[0.05] text-[#1C1C1E] placeholder:text-[#8E8E93] focus:outline-none focus:ring-2 focus:ring-[#007AFF]/40 dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:ring-[#0A84FF]/50 transition-all"
+        class="w-full h-9 sm:h-8 pl-8 pr-7 rounded-[10px] text-[16px] sm:text-[12px] bg-black/[0.05] text-[#1C1C1E] placeholder:text-[#8E8E93] focus:outline-none focus:ring-2 focus:ring-[#007AFF]/40 dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:ring-[#0A84FF]/50 transition-all"
       />
       <button
         v-if="searchQuery"
@@ -596,7 +596,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Scrollable emoji grid -->
-    <div ref="gridRef" class="h-[224px] overflow-y-auto chat-scroll pr-0.5">
+    <div ref="gridRef" class="h-[min(224px,36dvh)] overflow-y-auto chat-scroll pr-0.5">
       <div
         v-if="displayedEmojis.length === 0"
         class="h-full flex items-center justify-center text-[12px] text-[#8E8E93]"

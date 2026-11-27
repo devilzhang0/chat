@@ -19,6 +19,7 @@ import EmojiPicker from '@/components/EmojiPicker.vue';
 import OnlineUserList from '@/components/OnlineUserList.vue';
 import ThemeToggle from '@/components/ThemeToggle.vue';
 import {useChatSocket} from '@/composables/useChatSocket';
+import {useMobileViewport} from '@/composables/useMobileViewport';
 import {getAvatarBgClass, getAvatarInitials, type ChatMessage} from '@/types/chat';
 import {formatDateDivider, formatDateKey, formatMessageTime} from '@/utils/formatTime';
 
@@ -53,6 +54,51 @@ let copiedCodeTimer: number | null = null;
 
 const scrollContainerRef = ref<HTMLElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
+
+const {viewportHeight, viewportOffsetTop, isKeyboardOpen, syncViewport} = useMobileViewport(() => {
+  if (isAtBottom.value) {
+    nextTick(() => scrollToBottom(false));
+  }
+});
+
+const chatShellStyle = computed<Record<string, string>>(() => {
+  if (viewportHeight.value === null) return {};
+  return {
+    height: `${viewportHeight.value}px`,
+    top: `${viewportOffsetTop.value}px`,
+  };
+});
+
+function isCoarsePointerDevice(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
+}
+
+function handleTextareaFocus(): void {
+  if (showEmojiPicker.value) {
+    showEmojiPicker.value = false;
+  }
+  syncViewport();
+  if (isAtBottom.value) {
+    window.setTimeout(() => {
+      if (isAtBottom.value) {
+        scrollToBottom(false);
+      }
+    }, 120);
+    window.setTimeout(() => {
+      if (isAtBottom.value) {
+        scrollToBottom(false);
+      }
+    }, 320);
+  }
+}
+
+function handleToggleEmoji(): void {
+  const nextOpen = !showEmojiPicker.value;
+  if (nextOpen && (isKeyboardOpen.value || isCoarsePointerDevice())) {
+    textareaRef.value?.blur();
+  }
+  showEmojiPicker.value = nextOpen;
+}
 
 const STARTER_PROMPTS = ['大家好 👋', '刚进房间，聊点什么？', '今天过得怎么样？'];
 
@@ -230,7 +276,8 @@ function resizeTextarea(): void {
   const el = textareaRef.value;
   if (!el) return;
   el.style.height = 'auto';
-  const nextHeight = Math.min(el.scrollHeight, 136);
+  const maxHeight = isKeyboardOpen.value ? 96 : 136;
+  const nextHeight = Math.min(el.scrollHeight, maxHeight);
   el.style.height = `${nextHeight}px`;
 }
 
@@ -275,8 +322,10 @@ function insertEmoji(emoji: string): void {
   draft.value = draft.value.slice(0, start) + emoji + draft.value.slice(end);
   nextTick(() => {
     const nextPos = start + emoji.length;
-    el.focus();
-    el.setSelectionRange(nextPos, nextPos);
+    if (!isCoarsePointerDevice()) {
+      el.focus();
+      el.setSelectionRange(nextPos, nextPos);
+    }
     resizeTextarea();
   });
 }
@@ -313,18 +362,22 @@ onMounted(() => {
   nextTick(() => {
     scrollToBottom(false);
     isInitialScrollReady.value = true;
-    textareaRef.value?.focus();
+    if (!isCoarsePointerDevice()) {
+      textareaRef.value?.focus();
+    }
   });
 });
 </script>
 
 <template>
   <div
-    class="h-dvh flex flex-col overflow-hidden bg-white text-[#1C1C1E] dark:bg-black dark:text-[#F5F5F7] transition-colors duration-200"
+    :style="chatShellStyle"
+    class="fixed inset-x-0 top-0 h-dvh flex flex-col overflow-hidden bg-white text-[#1C1C1E] dark:bg-black dark:text-[#F5F5F7] transition-colors duration-200"
   >
     <!-- Frosted iOS Top Header -->
     <header
-      class="h-14 shrink-0 px-4 sm:px-6 flex items-center justify-between gap-3 ios-glass-bar border-b border-black/[0.06] dark:border-white/[0.08] z-20"
+      class="shrink-0 px-3.5 sm:px-6 flex items-center justify-between gap-2.5 sm:gap-3 ios-glass-bar border-b border-black/[0.06] dark:border-white/[0.08] z-20"
+      :class="isKeyboardOpen ? 'h-12 sm:h-14' : 'h-14'"
     >
       <div class="flex items-center gap-2.5 min-w-0">
         <span
@@ -454,13 +507,15 @@ onMounted(() => {
     <!-- Main Workspace: Chat Stream + Online Sidebar -->
     <div class="flex-1 flex min-h-0 overflow-hidden">
       <!-- Chat Stream Column -->
-      <main class="flex-1 flex flex-col min-w-0 relative bg-white dark:bg-black">
-        <!-- Scrollable Messages -->
-        <div
-          ref="scrollContainerRef"
-          @scroll="handleScroll"
-          class="flex-1 overflow-y-auto chat-scroll px-4 sm:px-7 py-6"
-        >
+      <main class="flex-1 flex flex-col min-w-0 min-h-0 bg-white dark:bg-black">
+        <div class="flex-1 relative min-h-0 flex flex-col">
+          <!-- Scrollable Messages -->
+          <div
+            ref="scrollContainerRef"
+            @scroll="handleScroll"
+            class="flex-1 overflow-y-auto chat-scroll px-3.5 sm:px-7"
+            :class="isKeyboardOpen ? 'py-3' : 'py-5 sm:py-6'"
+          >
           <div class="max-w-3xl mx-auto w-full flex flex-col">
             <!-- Loading skeleton -->
             <div v-if="isLoadingHistory" class="space-y-5 py-4" aria-label="正在加载历史记录">
@@ -649,7 +704,7 @@ onMounted(() => {
             v-if="!isAtBottom"
             type="button"
             @click="scrollToBottom(true)"
-            class="absolute bottom-24 right-5 sm:right-8 z-10 inline-flex items-center gap-1.5 h-9 px-4 rounded-full ios-glass-popover text-[#1C1C1E] dark:text-[#F5F5F7] ring-1 ring-black/[0.08] dark:ring-white/[0.12] shadow-[0_8px_24px_rgba(0,0,0,0.12)] dark:shadow-[0_10px_28px_rgba(0,0,0,0.55)] hover:scale-[1.02] active:scale-[0.97] text-[13px] font-medium transition-all cursor-pointer"
+            class="absolute bottom-3 right-4 sm:right-8 z-10 inline-flex items-center gap-1.5 h-9 px-4 rounded-full ios-glass-popover text-[#1C1C1E] dark:text-[#F5F5F7] ring-1 ring-black/[0.08] dark:ring-white/[0.12] shadow-[0_8px_24px_rgba(0,0,0,0.12)] dark:shadow-[0_10px_28px_rgba(0,0,0,0.55)] hover:scale-[1.02] active:scale-[0.97] text-[13px] font-medium transition-all cursor-pointer"
           >
             <ArrowDown class="w-3.5 h-3.5 text-[#007AFF] dark:text-[#0A84FF]" />
             <span v-if="unreadBelowCount > 0" class="font-mono-tabular">
@@ -658,17 +713,23 @@ onMounted(() => {
             <span v-else>回到底部</span>
           </button>
         </Transition>
+        </div>
 
         <!-- Frosted iOS Bottom Composer -->
         <div
-          class="shrink-0 ios-glass-bar border-t border-black/[0.06] dark:border-white/[0.08] px-4 sm:px-7 py-3"
+          class="shrink-0 ios-glass-bar border-t border-black/[0.06] dark:border-white/[0.08] px-3 sm:px-7"
+          :class="
+            isKeyboardOpen
+              ? 'py-2'
+              : 'pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:py-3'
+          "
         >
           <div class="max-w-3xl mx-auto w-full relative">
             <!-- Emoji Popover -->
             <Transition name="popover">
               <div
                 v-if="showEmojiPicker"
-                class="absolute bottom-full left-0 mb-3 z-20"
+                class="absolute bottom-full left-0 mb-2.5 sm:mb-3 z-20"
               >
                 <EmojiPicker
                   @select="insertEmoji"
@@ -677,12 +738,12 @@ onMounted(() => {
               </div>
             </Transition>
 
-            <div class="flex items-end gap-2.5">
+            <div class="flex items-end gap-2 sm:gap-2.5">
               <!-- Standalone iOS circular emoji trigger -->
               <button
                 type="button"
                 data-emoji-trigger
-                @click="showEmojiPicker = !showEmojiPicker"
+                @click="handleToggleEmoji"
                 :aria-expanded="showEmojiPicker"
                 aria-label="打开常用表情面板"
                 title="插入表情"
@@ -698,22 +759,25 @@ onMounted(() => {
 
               <!-- iMessage Pill Input Capsule -->
               <div
-                class="flex-1 flex items-end gap-2 rounded-[22px] bg-[#F2F2F7] dark:bg-[#1C1C1E] ring-1 ring-black/[0.08] dark:ring-white/[0.12] focus-within:bg-white dark:focus-within:bg-[#1C1C1E] focus-within:ring-[#007AFF]/70 dark:focus-within:ring-[#0A84FF]/80 pl-4 pr-1.5 py-1.5 transition-all duration-150"
+                class="flex-1 flex items-end gap-2 rounded-[22px] bg-[#F2F2F7] dark:bg-[#1C1C1E] ring-1 ring-black/[0.08] dark:ring-white/[0.12] focus-within:bg-white dark:focus-within:bg-[#1C1C1E] focus-within:ring-[#007AFF]/70 dark:focus-within:ring-[#0A84FF]/80 pl-3.5 sm:pl-4 pr-1.5 py-1.5 transition-all duration-150"
               >
                 <textarea
                   ref="textareaRef"
                   v-model="draft"
                   rows="1"
+                  enterkeyhint="send"
+                  @focus="handleTextareaFocus"
                   @input="resizeTextarea"
                   @keydown="handleKeydown"
                   @compositionstart="isComposing = true"
                   @compositionend="isComposing = false"
                   :placeholder="
                     status === 'connected'
-                      ? '输入消息，Enter 发送...'
+                      ? '输入消息...'
                       : '正在等待恢复连接...'
                   "
-                  class="flex-1 resize-none bg-transparent py-1 text-[15px] leading-[1.45] text-[#1C1C1E] placeholder:text-[#8E8E93] focus:outline-none dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] max-h-[136px] chat-scroll"
+                  class="flex-1 resize-none bg-transparent py-1 text-[16px] sm:text-[15px] leading-[1.45] text-[#1C1C1E] placeholder:text-[#8E8E93] focus:outline-none dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] chat-scroll"
+                  :class="isKeyboardOpen ? 'max-h-[96px]' : 'max-h-[136px]'"
                 />
 
                 <!-- Counter when approaching limit -->
@@ -732,6 +796,7 @@ onMounted(() => {
                 <!-- Iconic circular iOS ArrowUp Send Button -->
                 <button
                   type="button"
+                  @mousedown.prevent
                   @click="handleSend"
                   :disabled="!canSend"
                   aria-label="发送消息"

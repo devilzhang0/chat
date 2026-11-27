@@ -594,7 +594,7 @@ onMounted(async () => {
     </header>
 
     <!-- Main Centered iOS Sheet -->
-    <main class="flex-1 flex items-center justify-center px-5 py-10 sm:py-14">
+    <main class="flex-1 flex items-center justify-center px-5 pt-8 pb-[max(2.5rem,env(safe-area-inset-bottom))] sm:py-14">
       <div class="w-full max-w-[440px]">
         <div
           class="rounded-[28px] bg-white dark:bg-[#1C1C1E] p-7 sm:p-9 ring-1 ring-black/[0.04] dark:ring-white/[0.08] shadow-[0_24px_60px_-18px_rgba(0,0,0,0.09)] dark:shadow-[0_28px_70px_-16px_rgba(0,0,0,0.7)]"
@@ -723,7 +723,7 @@ onMounted(async () => {
                     autocomplete="nickname"
                     placeholder="例如：林浅、Alex"
                     :disabled="isBusy"
-                    class="w-full h-12 px-4 rounded-[14px] text-[15px] bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8E8E93] border border-transparent focus:bg-white focus:outline-none focus:border-[#007AFF] focus:ring-4 focus:ring-[#007AFF]/15 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:bg-[#2C2C2E] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/20 disabled:opacity-60 transition-all duration-150"
+                    class="w-full h-12 px-4 rounded-[14px] text-[16px] sm:text-[15px] bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8E8E93] border border-transparent focus:bg-white focus:outline-none focus:border-[#007AFF] focus:ring-4 focus:ring-[#007AFF]/15 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:bg-[#2C2C2E] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/20 disabled:opacity-60 transition-all duration-150"
                   />
                 </div>
 
@@ -773,7 +773,7 @@ onMounted(async () => {
                       autocomplete="off"
                       placeholder="请输入私密房间密码"
                       :disabled="isBusy"
-                      class="w-full h-12 pl-4 pr-11 rounded-[14px] text-[15px] bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8E8E93] border border-transparent focus:bg-white focus:outline-none focus:border-[#007AFF] focus:ring-4 focus:ring-[#007AFF]/15 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:bg-[#2C2C2E] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/20 disabled:opacity-60 transition-all duration-150"
+                      class="w-full h-12 pl-4 pr-11 rounded-[14px] text-[16px] sm:text-[15px] bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8E8E93] border border-transparent focus:bg-white focus:outline-none focus:border-[#007AFF] focus:ring-4 focus:ring-[#007AFF]/15 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:bg-[#2C2C2E] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/20 disabled:opacity-60 transition-all duration-150"
                     />
                     <button
                       type="button"
@@ -973,7 +973,7 @@ onMounted(async () => {
                           autocomplete="off"
                           placeholder="输入私密房间密码"
                           :disabled="isBusy"
-                          class="w-full h-9 pl-3 pr-8 rounded-[10px] text-[13px] bg-white text-[#1C1C1E] placeholder:text-[#8E8E93] border border-black/[0.08] focus:outline-none focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:border-white/[0.12] dark:focus:border-[#0A84FF]"
+                          class="w-full h-10 sm:h-9 pl-3 pr-8 rounded-[10px] text-[16px] sm:text-[13px] bg-white text-[#1C1C1E] placeholder:text-[#8E8E93] border border-black/[0.08] focus:outline-none focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:border-white/[0.12] dark:focus:border-[#0A84FF]"
                         />
                         <button
                           type="button"
@@ -1045,7 +1045,7 @@ onMounted(async () => {
                     maxlength="24"
                     autocomplete="nickname"
                     placeholder="例如：林浅、Alex"
-                    class="w-full h-12 px-4 rounded-[14px] text-[15px] bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8E8E93] border border-transparent focus:bg-white focus:outline-none focus:border-[#007AFF] focus:ring-4 focus:ring-[#007AFF]/15 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:bg-[#2C2C2E] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/20 transition-all duration-150"
+                    class="w-full h-12 px-4 rounded-[14px] text-[16px] sm:text-[15px] bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8E8E93] border border-transparent focus:bg-white focus:outline-none focus:border-[#007AFF] focus:ring-4 focus:ring-[#007AFF]/15 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:bg-[#2C2C2E] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/20 transition-all duration-150"
                   />
 
                   <p v-if="displayError" role="alert" class="mt-2 px-1 text-[13px] text-[#FF3B30] dark:text-[#FF453A]">
@@ -1190,7 +1190,7 @@ onMounted(async () => {
                           autocomplete="off"
                           placeholder="输入私密房间密码"
                           :disabled="isBusy"
-                          class="w-full h-9 pl-3 pr-8 rounded-[10px] text-[13px] bg-white text-[#1C1C1E] placeholder:text-[#8E8E93] border border-black/[0.08] focus:outline-none focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:border-white/[0.12] dark:focus:border-[#0A84FF]"
+                          class="w-full h-10 sm:h-9 pl-3 pr-8 rounded-[10px] text-[16px] sm:text-[13px] bg-white text-[#1C1C1E] placeholder:text-[#8E8E93] border border-black/[0.08] focus:outline-none focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:border-white/[0.12] dark:focus:border-[#0A84FF]"
                         />
                         <button
                           type="button"
@@ -1356,7 +1356,7 @@ onMounted(async () => {
                       autocomplete="off"
                       placeholder="输入房间密码"
                       :disabled="isBusy"
-                      class="w-full h-11 pl-3.5 pr-10 rounded-[12px] text-[15px] bg-white text-[#1C1C1E] placeholder:text-[#8E8E93] border border-black/[0.08] focus:outline-none focus:border-[#007AFF] focus:ring-3 focus:ring-[#007AFF]/15 dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:border-white/[0.12] dark:focus:border-[#0A84FF] transition-all"
+                      class="w-full h-11 pl-3.5 pr-10 rounded-[12px] text-[16px] sm:text-[15px] bg-white text-[#1C1C1E] placeholder:text-[#8E8E93] border border-black/[0.08] focus:outline-none focus:border-[#007AFF] focus:ring-3 focus:ring-[#007AFF]/15 dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:border-white/[0.12] dark:focus:border-[#0A84FF] transition-all"
                     />
                     <button
                       type="button"
@@ -1497,7 +1497,7 @@ onMounted(async () => {
                   maxlength="28"
                   placeholder="例如：周末闲聊、项目讨论"
                   :disabled="isBusy"
-                  class="w-full h-12 px-4 rounded-[14px] text-[15px] bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8E8E93] border border-transparent focus:bg-white focus:outline-none focus:border-[#007AFF] focus:ring-4 focus:ring-[#007AFF]/15 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:bg-[#2C2C2E] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/20 disabled:opacity-60 transition-all duration-150"
+                  class="w-full h-12 px-4 rounded-[14px] text-[16px] sm:text-[15px] bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8E8E93] border border-transparent focus:bg-white focus:outline-none focus:border-[#007AFF] focus:ring-4 focus:ring-[#007AFF]/15 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:bg-[#2C2C2E] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/20 disabled:opacity-60 transition-all duration-150"
                 />
               </div>
 
@@ -1572,7 +1572,7 @@ onMounted(async () => {
                     autocomplete="new-password"
                     placeholder="请输入 4 到 20 位密码"
                     :disabled="isBusy"
-                    class="w-full h-12 pl-4 pr-11 rounded-[14px] text-[15px] bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8E8E93] border border-transparent focus:bg-white focus:outline-none focus:border-[#007AFF] focus:ring-4 focus:ring-[#007AFF]/15 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:bg-[#2C2C2E] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/20 disabled:opacity-60 transition-all duration-150"
+                    class="w-full h-12 pl-4 pr-11 rounded-[14px] text-[16px] sm:text-[15px] bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8E8E93] border border-transparent focus:bg-white focus:outline-none focus:border-[#007AFF] focus:ring-4 focus:ring-[#007AFF]/15 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:placeholder:text-[#8E8E93] dark:focus:bg-[#2C2C2E] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/20 disabled:opacity-60 transition-all duration-150"
                   />
                   <button
                     type="button"
