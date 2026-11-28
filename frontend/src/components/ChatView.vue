@@ -14,12 +14,15 @@ import {
   RefreshCw,
   Smile,
   Users,
+  Volume2,
+  VolumeX,
 } from 'lucide-vue-next';
 import EmojiPicker from '@/components/EmojiPicker.vue';
 import OnlineUserList from '@/components/OnlineUserList.vue';
 import ThemeToggle from '@/components/ThemeToggle.vue';
 import {useChatSocket} from '@/composables/useChatSocket';
 import {useMobileViewport} from '@/composables/useMobileViewport';
+import {useNotification} from '@/composables/useNotification';
 import {getAvatarBgClass, getAvatarInitials, type ChatMessage} from '@/types/chat';
 import {formatDateDivider, formatDateKey, formatMessageTime} from '@/utils/formatTime';
 
@@ -27,6 +30,7 @@ const {
   currentUser,
   currentRoom,
   messages,
+  lastIncomingMessage,
   onlineUsers,
   status,
   isLoadingHistory,
@@ -55,6 +59,15 @@ let copiedCodeTimer: number | null = null;
 
 const scrollContainerRef = ref<HTMLElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
+
+const roomNameRef = computed(() => currentRoom.value?.name);
+const {soundEnabled, toggleSound, notifyIncomingMessage} = useNotification(roomNameRef);
+
+watch(lastIncomingMessage, (msg) => {
+  if (!msg || msg.type !== 'text') return;
+  if (currentUser.value && msg.senderId === currentUser.value.id) return;
+  notifyIncomingMessage();
+});
 
 const {viewportHeight, viewportOffsetTop, isKeyboardOpen, syncViewport} = useMobileViewport(() => {
   if (isAtBottom.value) {
@@ -515,6 +528,24 @@ onMounted(() => {
         >
           <Users class="w-3.5 h-3.5 shrink-0" />
           <span class="font-mono-tabular">{{ onlineUsers.length }}</span>
+        </button>
+
+        <!-- Message sound toggle -->
+        <button
+          type="button"
+          @click="toggleSound"
+          :aria-pressed="soundEnabled"
+          :aria-label="soundEnabled ? '关闭消息提示音' : '开启消息提示音'"
+          :title="soundEnabled ? '已开启消息提示音（点击静音）' : '已静音（点击开启提示音）'"
+          class="inline-flex items-center justify-center h-9 w-9 rounded-full shrink-0 active:scale-[0.96] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] dark:focus-visible:ring-[#0A84FF] cursor-pointer"
+          :class="
+            soundEnabled
+              ? 'bg-black/[0.05] text-[#1C1C1E] hover:bg-black/[0.09] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-white/[0.15]'
+              : 'bg-black/[0.04] text-[#8E8E93] hover:bg-black/[0.08] hover:text-[#636366] dark:bg-white/[0.06] dark:text-[#636366] dark:hover:bg-white/[0.12] dark:hover:text-[#98989F]'
+          "
+        >
+          <Volume2 v-if="soundEnabled" class="w-4 h-4 shrink-0" />
+          <VolumeX v-else class="w-4 h-4 shrink-0" />
         </button>
 
         <ThemeToggle />

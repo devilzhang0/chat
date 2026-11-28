@@ -251,6 +251,7 @@ const currentUser = ref<OnlineUser | null>(null);
 const currentRoom = ref<RoomInfo | null>(null);
 const lastProfile = ref<SavedProfile | null>(null);
 const messages = ref<ChatMessage[]>([]);
+const lastIncomingMessage = ref<ChatMessage | null>(null);
 const onlineUsers = ref<OnlineUser[]>([]);
 const status = ref<ConnectionStatus>('idle');
 const isLoadingHistory = ref(false);
@@ -450,7 +451,7 @@ function markAllSendingAsFailed(reason: string): void {
   }
 }
 
-function upsertMessageIdempotent(incoming: ChatMessage, clientTempId?: string): void {
+function upsertMessageIdempotent(incoming: ChatMessage, clientTempId?: string): boolean {
   if (clientTempId) {
     clearPendingSendTimer(clientTempId);
     const optimisticIdx = messages.value.findIndex(
@@ -472,14 +473,15 @@ function upsertMessageIdempotent(incoming: ChatMessage, clientTempId?: string): 
       } else {
         messages.value.splice(optimisticIdx, 1, confirmed);
       }
-      return;
+      return false;
     }
   }
 
   if (messages.value.some((m) => m.id === incoming.id)) {
-    return;
+    return false;
   }
   messages.value.push({...incoming, sendStatus: 'sent'});
+  return true;
 }
 
 function mergeHistoryIdempotent(
@@ -675,7 +677,10 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
         if (frame.roomCode && currentRoom.value && frame.roomCode !== currentRoom.value.code) {
           return;
         }
-        upsertMessageIdempotent(frame.message, frame.clientTempId);
+        const inserted = upsertMessageIdempotent(frame.message, frame.clientTempId);
+        if (inserted) {
+          lastIncomingMessage.value = frame.message;
+        }
         return;
       }
 
@@ -924,6 +929,7 @@ export function useChatSocket() {
     currentRoom.value = null;
     onlineUsers.value = [];
     messages.value = [];
+    lastIncomingMessage.value = null;
     status.value = 'idle';
     isLoadingHistory.value = false;
     hasMoreHistory.value = false;
@@ -947,6 +953,7 @@ export function useChatSocket() {
     currentRoom,
     lastProfile,
     messages,
+    lastIncomingMessage,
     onlineUsers,
     status,
     isLoadingHistory,

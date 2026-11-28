@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="mychat-bg" x1="32" y1="2" x2="32" y2="62" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3AA0FF" />
+      <stop offset="100%" stop-color="#007AFF" />
+    </linearGradient>
+    <linearGradient id="mychat-bubble" x1="32" y1="17" x2="32" y2="51" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#F2F7FF" />
+    </linearGradient>
+  </defs>
+
+  <!-- iOS squircle base -->
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#mychat-bg)" />
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="14.25" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="1.5" />
+
+  <!-- Chat bubble silhouette -->
+  <path
+    d="M20 17H44C48.4183 17 52 20.5817 52 25V36C52 40.4183 48.4183 44 44 44H27.2L18.4 49.8C17.2 50.6 15.6 49.74 15.6 48.3V43.1C13.4 41.68 12 39.02 12 36V25C12 20.5817 15.5817 17 20 17Z"
+    fill="url(#mychat-bubble)"
+  />
+
+  <!-- Three message dots -->
+  <circle cx="23.5" cy="30.5" r="2.7" fill="#007AFF" />
+  <circle cx="32" cy="30.5" r="2.7" fill="#007AFF" />
+  <circle cx="40.5" cy="30.5" r="2.7" fill="#007AFF" />
+</svg>
