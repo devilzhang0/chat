@@ -18,6 +18,7 @@ import {
   VolumeX,
 } from 'lucide-vue-next';
 import EmojiPicker from '@/components/EmojiPicker.vue';
+import MessageContent from '@/components/MessageContent.vue';
 import OnlineUserList from '@/components/OnlineUserList.vue';
 import ThemeToggle from '@/components/ThemeToggle.vue';
 import {useChatSocket} from '@/composables/useChatSocket';
@@ -767,7 +768,7 @@ onMounted(() => {
                       <div
                         class="px-4 py-2.5 rounded-[20px] rounded-bl-[6px] bg-[#E9E9EB] text-[#1C1C1E] dark:bg-[#262629] dark:text-[#F5F5F7] text-[15px] leading-[1.48] whitespace-pre-wrap break-words"
                       >
-                        {{ item.message.content }}
+                        <MessageContent :content="item.message.content" :is-self="false" />
                       </div>
                     </div>
                   </div>
@@ -820,7 +821,7 @@ onMounted(() => {
                             item.message.sendStatus === 'failed',
                         }"
                       >
-                        {{ item.message.content }}
+                        <MessageContent :content="item.message.content" :is-self="true" />
                       </div>
                     </div>
 
