@@ -132,7 +132,9 @@ sudo systemctl status mychat
 curl http://127.0.0.1:8080/api/auth/me   # 应返回 JSON（ApiResult）
 ```
 
-日志：`journalctl -u mychat -f`
+日志：
+- 实时控制台日志：`journalctl -u mychat -f`
+- 落盘日志文件：`/opt/mychat/logs/mychat.log`（错误日志 `mychat-error.log`，按天自动压缩归档至 `/opt/mychat/logs/archive/`，默认保留 30 天；可通过环境变量 `LOGGING_FILE_PATH` 自定义目录）
 
 ## 四、部署前端
 

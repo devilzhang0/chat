@@ -18,3 +18,8 @@ server:
 jwt:
   secret: aVeryLongAndSecureKeyWithAtLeast32Characters123!
   expiration: 60000
+
+logging:
+  file:
+    # 默认输出到工作目录下的 logs/（服务器可用环境变量 LOGGING_FILE_PATH 覆盖）
+    path: logs
