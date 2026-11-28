@@ -100,6 +100,58 @@ function handleToggleEmoji(): void {
   showEmojiPicker.value = nextOpen;
 }
 
+let chatTouchStart: {x: number; y: number} | null = null;
+
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    Boolean(target.closest('button, a, input, textarea, [role="button"]'))
+  );
+}
+
+function dismissInputOverlay(target: EventTarget | null): void {
+  if (isInteractiveTarget(target)) return;
+  const selectedText = window.getSelection?.()?.toString();
+  if (selectedText && selectedText.length > 0) return;
+
+  if (document.activeElement === textareaRef.value) {
+    textareaRef.value?.blur();
+  }
+  if (showEmojiPicker.value) {
+    showEmojiPicker.value = false;
+  }
+}
+
+function handleChatTouchStart(e: TouchEvent): void {
+  const touch = e.touches[0];
+  if (!touch) return;
+  chatTouchStart = {x: touch.clientX, y: touch.clientY};
+}
+
+function handleChatTouchEnd(e: TouchEvent): void {
+  const touch = e.changedTouches[0];
+  if (!touch || !chatTouchStart) {
+    chatTouchStart = null;
+    return;
+  }
+  const dx = Math.abs(touch.clientX - chatTouchStart.x);
+  const dy = Math.abs(touch.clientY - chatTouchStart.y);
+  chatTouchStart = null;
+  if (dx < 10 && dy < 10) {
+    dismissInputOverlay(e.target);
+  }
+}
+
+function handleChatClick(e: MouseEvent): void {
+  dismissInputOverlay(e.target);
+}
+
+function handleOpenMobileUsers(): void {
+  textareaRef.value?.blur();
+  showEmojiPicker.value = false;
+  showMobileUsers.value = true;
+}
+
 const STARTER_PROMPTS = ['大家好 👋', '刚进房间，聊点什么？', '今天过得怎么样？'];
 
 const shareUrl = computed(() => {
@@ -283,6 +335,7 @@ function resizeTextarea(): void {
 
 function handleSend(): void {
   if (!canSend.value) return;
+  const wasFocused = document.activeElement === textareaRef.value;
   const sent = sendMessage(draft.value);
   if (sent) {
     draft.value = '';
@@ -290,7 +343,9 @@ function handleSend(): void {
     nextTick(() => {
       resizeTextarea();
       scrollToBottom(true);
-      textareaRef.value?.focus();
+      if (!isCoarsePointerDevice() || wasFocused) {
+        textareaRef.value?.focus();
+      }
     });
   }
 }
@@ -300,7 +355,9 @@ function handleStarterSend(text: string): void {
   sendMessage(text);
   nextTick(() => {
     scrollToBottom(true);
-    textareaRef.value?.focus();
+    if (!isCoarsePointerDevice()) {
+      textareaRef.value?.focus();
+    }
   });
 }
 
@@ -376,6 +433,7 @@ onMounted(() => {
   >
     <!-- Frosted iOS Top Header -->
     <header
+      @click="handleChatClick"
       class="shrink-0 px-3.5 sm:px-6 flex items-center justify-between gap-2.5 sm:gap-3 ios-glass-bar border-b border-black/[0.06] dark:border-white/[0.08] z-20"
       :class="isKeyboardOpen ? 'h-12 sm:h-14' : 'h-14'"
     >
@@ -441,7 +499,7 @@ onMounted(() => {
         <!-- Mobile online members trigger -->
         <button
           type="button"
-          @click="showMobileUsers = true"
+          @click="handleOpenMobileUsers"
           class="md:hidden inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 bg-black/[0.05] text-[#1C1C1E] hover:bg-black/[0.09] active:scale-[0.96] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-white/[0.15] transition-all cursor-pointer"
           aria-label="查看在线成员"
         >
@@ -513,6 +571,9 @@ onMounted(() => {
           <div
             ref="scrollContainerRef"
             @scroll="handleScroll"
+            @touchstart.passive="handleChatTouchStart"
+            @touchend.passive="handleChatTouchEnd"
+            @click="handleChatClick"
             class="flex-1 overflow-y-auto chat-scroll px-3.5 sm:px-7"
             :class="isKeyboardOpen ? 'py-3' : 'py-5 sm:py-6'"
           >
