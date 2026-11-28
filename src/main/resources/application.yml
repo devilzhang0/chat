@@ -2,24 +2,27 @@ spring:
   application:
     name: MyChat
   datasource:
-    url: jdbc:mysql://127.0.0.1:3306/test?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
-    username: z
-    password: 123456
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/test?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai}
+    username: ${SPRING_DATASOURCE_USERNAME:}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       minimum-idle: 3
       maximum-pool-size: 10
-      max-lifetime: 30000   #不能小于30秒，否则默认回到1800秒
+      max-lifetime: 30000   # 不能小于30秒，否则默认回到1800秒
       connection-test-query: SELECT 1
 
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
 
-jwt:
-  secret: aVeryLongAndSecureKeyWithAtLeast32Characters123!
-  expiration: 60000
+mychat:
+  security:
+    # WebSocket 允许的 Origin 模式（逗号分隔，禁止在生产环境使用 *）。
+    # 本地开发默认放行 localhost / 127.0.0.1；生产环境请通过环境变量收紧为实际前端域名，例如：
+    # MYCHAT_ALLOWED_ORIGIN_PATTERNS=https://chat.example.com
+    allowed-origin-patterns: ${MYCHAT_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*}
 
 logging:
   file:
     # 默认输出到工作目录下的 logs/（服务器可用环境变量 LOGGING_FILE_PATH 覆盖）
-    path: logs
+    path: ${LOGGING_FILE_PATH:logs}

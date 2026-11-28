@@ -81,7 +81,7 @@ cd /path/to/MyChat
 # 产物：target/MyChat-0.0.1-SNAPSHOT.jar
 ```
 
-> `-DskipTests` 是必须的：`MybatisTest` 断言了硬编码的 DB 数据量，在干净库上会失败。
+> `-DskipTests` 用于打包跳过依赖本地数据库的集成测试；核心单元测试可通过 `./mvnw test -Dtest=RateLimitServiceTest,OnlineUserManagerTest,MessageServiceTest` 单独执行。
 
 ### 3.2 上传并配置
 
@@ -112,10 +112,11 @@ SuccessExitStatus=143
 Restart=always
 RestartSec=5
 
-# 覆盖数据库连接（指向本机 MySQL）
+# 覆盖数据库连接（指向本机 MySQL）与 WebSocket 允许的前端域名
 Environment=SPRING_DATASOURCE_URL=jdbc:mysql://127.0.0.1:3306/test?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
 Environment=SPRING_DATASOURCE_USERNAME=mychat
 Environment=SPRING_DATASOURCE_PASSWORD=改成你的数据库密码
+Environment=MYCHAT_ALLOWED_ORIGIN_PATTERNS=https://你的前端域名
 
 [Install]
 WantedBy=multi-user.target
@@ -164,7 +165,7 @@ sudo cp -r /tmp/mychat-dist/* /var/www/mychat/
 sudo tee /etc/nginx/conf.d/mychat.conf > /dev/null <<'EOF'
 server {
     listen 80;
-    server_name 47.100.234.220;
+    server_name 你的域名或服务器IP;
 
     root /var/www/mychat;
     index index.html;
@@ -241,7 +242,7 @@ sudo systemctl reload nginx
 
 ## 九、安全加固（上线前必做）
 
-1. **改数据库密码**：`application.yml` 里硬编码了 `Zhang@2023`，务必换成强密码（用 3.3 的环境变量覆盖）。
-2. **改 JWT secret**：`application.yml` 里的 `jwt.secret` 是硬编码示例值，仅 admin 演示登录使用，建议替换。
+1. **环境变量注入数据库凭据**：`application.yml` 不再包含明文账号密码，务必在 `mychat.service` 中通过 `SPRING_DATASOURCE_USERNAME` / `SPRING_DATASOURCE_PASSWORD` 注入强密码。
+2. **收紧 WebSocket 跨域来源**：务必在 `mychat.service` 中将 `MYCHAT_ALLOWED_ORIGIN_PATTERNS` 设置为实际前端域名（例如 `https://chat.example.com`；暂未配域名时填 `http://你的服务器IP`），不要使用 `*`。
 3. **只开 80/443**，后端 `8080` 与 MySQL `3306` 绑定本机即可。
-4. 建议上 HTTPS（`certbot --nginx` 一键配置 Let's Encrypt），否则 `guest_id` cookie 与消息明文传输。
+4. 建议上 HTTPS（`certbot --nginx` 一键配置 Let's Encrypt），否则 `guest_id` Cookie 与聊天消息明文传输。

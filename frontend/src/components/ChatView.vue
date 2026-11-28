@@ -68,21 +68,56 @@ const unreadBelowCount = ref(0);
 const isInitialScrollReady = ref(false);
 const copiedShare = ref(false);
 const copiedCode = ref(false);
+interface FloatingMenuState {
+  message: ChatMessage;
+  top: number;
+  left: number;
+  arrowLeft: number;
+  placeBelow: boolean;
+}
+
 const replyingTo = ref<ReplySnapshot | null>(null);
 const highlightedMessageId = ref<string | null>(null);
 const mentionAlert = ref<{messageId: string; senderName: string} | null>(null);
 const mentionTrigger = ref<{start: number; end: number; query: string} | null>(null);
 const mentionActiveIndex = ref(0);
+const floatingMenu = ref<FloatingMenuState | null>(null);
+const pressingMessageId = ref<string | null>(null);
+const copiedToast = ref<string | null>(null);
+
+// 手机端左右轻滑快捷回复状态
+const swipingMessageId = ref<string | null>(null);
+const swipeOffsetX = ref(0);
+const swipeTriggered = ref(false);
 
 const REVOKE_WINDOW_MS = 2 * 60 * 1000;
+const LONG_PRESS_MS = 360;
+const SWIPE_EDGE_GUARD_PX = 28;
+const SWIPE_TRIGGER_PX = 44;
+const SWIPE_MAX_OFFSET_PX = 62;
+
 const nowTick = ref(Date.now());
 let nowTickTimer: number | null = null;
+let longPressTimer: number | null = null;
+let copiedToastTimer: number | null = null;
+let floatingMenuOpenedAt = 0;
+
+interface BubbleTouchContext {
+  msg: ChatMessage;
+  el: HTMLElement;
+  startX: number;
+  startY: number;
+  axis: 'none' | 'horizontal' | 'vertical';
+  edgeBlocked: boolean;
+}
+let bubbleTouchCtx: BubbleTouchContext | null = null;
 
 let copiedShareTimer: number | null = null;
 let copiedCodeTimer: number | null = null;
 let highlightTimer: number | null = null;
 let mentionAlertTimer: number | null = null;
 
+const headerRef = ref<HTMLElement | null>(null);
 const scrollContainerRef = ref<HTMLElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 
@@ -123,6 +158,9 @@ watch(lastRevokedMessageId, (revokedId) => {
   }
   if (mentionAlert.value?.messageId === revokedId) {
     mentionAlert.value = null;
+  }
+  if (floatingMenu.value?.message.id === revokedId) {
+    floatingMenu.value = null;
   }
 });
 
@@ -394,6 +432,9 @@ async function handleLoadOlderHistory(): Promise<void> {
 }
 
 function handleScroll(): void {
+  if (floatingMenu.value) {
+    floatingMenu.value = null;
+  }
   const el = scrollContainerRef.value;
   if (!el) return;
   const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -437,6 +478,237 @@ function canRevokeMessage(msg: ChatMessage): boolean {
 function handleRevoke(msg: ChatMessage): void {
   if (!canRevokeMessage(msg)) return;
   revokeMessage(msg.id);
+}
+
+function showCopiedToast(text: string): void {
+  copiedToast.value = text;
+  if (copiedToastTimer !== null) window.clearTimeout(copiedToastTimer);
+  copiedToastTimer = window.setTimeout(() => {
+    copiedToast.value = null;
+    copiedToastTimer = null;
+  }, 1800);
+}
+
+async function handleCopyMessage(msg: ChatMessage): Promise<void> {
+  if (!msg.content) return;
+  const ok = await copyToClipboard(msg.content);
+  if (ok) {
+    showCopiedToast('已复制消息内容');
+  }
+}
+
+function clearLongPressTimer(): void {
+  if (longPressTimer !== null) {
+    window.clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  pressingMessageId.value = null;
+}
+
+function resetSwipeState(): void {
+  swipingMessageId.value = null;
+  swipeOffsetX.value = 0;
+  swipeTriggered.value = false;
+}
+
+function cancelBubbleGesture(): void {
+  clearLongPressTimer();
+  resetSwipeState();
+  bubbleTouchCtx = null;
+}
+
+function triggerHaptic(ms = 10): void {
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate(ms);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function openFloatingMenu(msg: ChatMessage, bubbleEl: HTMLElement): void {
+  const rect = bubbleEl.getBoundingClientRect();
+  const itemCount =
+    (canReplyMessage(msg) ? 1 : 0) + 1 + (canRevokeMessage(msg) ? 1 : 0);
+  const estWidth = itemCount * 58 + Math.max(0, itemCount - 1);
+  const topBoundary = (headerRef.value?.getBoundingClientRect().bottom ?? 56) + 64;
+  const placeBelow = rect.top < topBoundary;
+  const top = placeBelow ? rect.bottom + 10 : rect.top - 10;
+
+  const bubbleCenterX = rect.left + rect.width / 2;
+  const maxLeft = Math.max(12, window.innerWidth - estWidth - 12);
+  const left = Math.min(Math.max(12, bubbleCenterX - estWidth / 2), maxLeft);
+  const arrowLeft = Math.min(Math.max(18, bubbleCenterX - left), estWidth - 18);
+
+  floatingMenuOpenedAt = Date.now();
+  floatingMenu.value = {
+    message: msg,
+    top: Math.round(top),
+    left: Math.round(left),
+    arrowLeft: Math.round(arrowLeft),
+    placeBelow,
+  };
+}
+
+function handleBubbleTouchStart(e: TouchEvent, msg: ChatMessage): void {
+  if (msg.revoked || msg.type !== 'text') return;
+  if (e.target instanceof HTMLElement && e.target.closest('a, button')) return;
+  const touch = e.touches[0];
+  const el = e.currentTarget as HTMLElement | null;
+  if (!touch || !el) return;
+
+  if (floatingMenu.value) {
+    floatingMenu.value = null;
+  }
+  cancelBubbleGesture();
+
+  const edgeBlocked =
+    touch.clientX < SWIPE_EDGE_GUARD_PX ||
+    touch.clientX > window.innerWidth - 20;
+
+  bubbleTouchCtx = {
+    msg,
+    el,
+    startX: touch.clientX,
+    startY: touch.clientY,
+    axis: 'none',
+    edgeBlocked,
+  };
+  pressingMessageId.value = msg.id;
+
+  longPressTimer = window.setTimeout(() => {
+    longPressTimer = null;
+    pressingMessageId.value = null;
+    if (!bubbleTouchCtx || bubbleTouchCtx.axis !== 'none') return;
+    const {msg: targetMsg, el: targetEl} = bubbleTouchCtx;
+    bubbleTouchCtx = null;
+
+    textareaRef.value?.blur();
+    showEmojiPicker.value = false;
+    mentionTrigger.value = null;
+    triggerHaptic(12);
+    openFloatingMenu(targetMsg, targetEl);
+  }, LONG_PRESS_MS);
+}
+
+function handleBubbleTouchMove(e: TouchEvent): void {
+  if (!bubbleTouchCtx) return;
+  const touch = e.touches[0];
+  if (!touch) {
+    cancelBubbleGesture();
+    return;
+  }
+
+  const rawDx = touch.clientX - bubbleTouchCtx.startX;
+  const rawDy = touch.clientY - bubbleTouchCtx.startY;
+  const absX = Math.abs(rawDx);
+  const absY = Math.abs(rawDy);
+
+  if (absX > 8 || absY > 8) {
+    clearLongPressTimer();
+  }
+
+  if (bubbleTouchCtx.axis === 'none') {
+    if (absY > 10 && absY >= absX) {
+      bubbleTouchCtx.axis = 'vertical';
+      return;
+    }
+    if (absX > 10 && absX > absY) {
+      if (!bubbleTouchCtx.edgeBlocked && canReplyMessage(bubbleTouchCtx.msg)) {
+        bubbleTouchCtx.axis = 'horizontal';
+        swipingMessageId.value = bubbleTouchCtx.msg.id;
+        swipeTriggered.value = false;
+      } else {
+        bubbleTouchCtx.axis = 'vertical';
+        return;
+      }
+    }
+  }
+
+  if (bubbleTouchCtx.axis === 'horizontal') {
+    if (e.cancelable) {
+      e.preventDefault();
+    }
+    const sign = rawDx >= 0 ? 1 : -1;
+    const damped =
+      absX <= SWIPE_TRIGGER_PX
+        ? absX
+        : SWIPE_TRIGGER_PX + (absX - SWIPE_TRIGGER_PX) * 0.35;
+    const clamped = sign * Math.min(damped, SWIPE_MAX_OFFSET_PX);
+    swipeOffsetX.value = clamped;
+
+    if (!swipeTriggered.value && Math.abs(clamped) >= SWIPE_TRIGGER_PX) {
+      swipeTriggered.value = true;
+      triggerHaptic(10);
+    } else if (swipeTriggered.value && Math.abs(clamped) < SWIPE_TRIGGER_PX - 6) {
+      swipeTriggered.value = false;
+    }
+  }
+}
+
+function handleBubbleTouchEnd(): void {
+  clearLongPressTimer();
+  if (bubbleTouchCtx && bubbleTouchCtx.axis === 'horizontal') {
+    const shouldReply = swipeTriggered.value;
+    const targetMsg = bubbleTouchCtx.msg;
+    resetSwipeState();
+    bubbleTouchCtx = null;
+    if (shouldReply) {
+      startReply(targetMsg);
+    }
+    return;
+  }
+  resetSwipeState();
+  bubbleTouchCtx = null;
+}
+
+function handleBubbleContextMenu(e: MouseEvent): void {
+  if (isCoarsePointerDevice()) {
+    e.preventDefault();
+  }
+}
+
+function closeFloatingMenu(): void {
+  floatingMenu.value = null;
+}
+
+function handleFloatingBackdropClick(): void {
+  if (Date.now() - floatingMenuOpenedAt < 350) return;
+  closeFloatingMenu();
+}
+
+function handleFloatingReply(): void {
+  const target = floatingMenu.value?.message;
+  closeFloatingMenu();
+  if (target) {
+    startReply(target);
+  }
+}
+
+async function handleFloatingCopy(): Promise<void> {
+  const target = floatingMenu.value?.message;
+  closeFloatingMenu();
+  if (target) {
+    await handleCopyMessage(target);
+  }
+}
+
+function handleFloatingRevoke(): void {
+  const target = floatingMenu.value?.message;
+  closeFloatingMenu();
+  if (target) {
+    handleRevoke(target);
+  }
+}
+
+function getSwipeRowStyle(msgId: string): Record<string, string> | undefined {
+  if (swipingMessageId.value !== msgId || swipeOffsetX.value === 0) {
+    return undefined;
+  }
+  return {
+    transform: `translateX(${swipeOffsetX.value}px)`,
+  };
 }
 
 function startReply(msg: ChatMessage): void {
@@ -668,6 +940,11 @@ onBeforeUnmount(() => {
     window.clearInterval(nowTickTimer);
     nowTickTimer = null;
   }
+  cancelBubbleGesture();
+  if (copiedToastTimer !== null) {
+    window.clearTimeout(copiedToastTimer);
+    copiedToastTimer = null;
+  }
 });
 </script>
 
@@ -676,13 +953,17 @@ onBeforeUnmount(() => {
     :style="chatShellStyle"
     class="fixed inset-x-0 top-0 h-dvh flex flex-col overflow-hidden bg-white text-[#1C1C1E] dark:bg-black dark:text-[#F5F5F7] transition-colors duration-200"
   >
-    <!-- Frosted iOS Top Header -->
+    <!-- Frosted iOS Top Header (extends behind status bar in standalone PWA mode) -->
     <header
+      ref="headerRef"
       @click="handleChatClick"
-      class="shrink-0 px-3.5 sm:px-6 flex items-center justify-between gap-2.5 sm:gap-3 ios-glass-bar border-b border-black/[0.06] dark:border-white/[0.08] z-20"
-      :class="isKeyboardOpen ? 'h-12 sm:h-14' : 'h-14'"
+      class="shrink-0 pt-[env(safe-area-inset-top)] ios-glass-bar border-b border-black/[0.06] dark:border-white/[0.08] z-20"
     >
-      <div class="flex items-center gap-2.5 min-w-0">
+      <div
+        class="pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] sm:px-6 flex items-center justify-between gap-2 sm:gap-3"
+        :class="isKeyboardOpen ? 'h-12 sm:h-14' : 'h-14'"
+      >
+      <div class="flex-1 flex items-center gap-2 sm:gap-2.5 min-w-0 overflow-hidden">
         <span
           class="h-8 w-8 rounded-[10px] text-white inline-flex items-center justify-center shrink-0"
           :class="
@@ -696,9 +977,9 @@ onBeforeUnmount(() => {
           <MessageSquare v-else class="w-4 h-4 fill-white/15" />
         </span>
 
-        <div class="flex items-center gap-2 min-w-0">
+        <div class="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-2">
           <h1
-            class="text-[15px] font-semibold tracking-[-0.015em] text-[#1C1C1E] dark:text-[#F5F5F7] truncate max-w-[140px] sm:max-w-[240px]"
+            class="text-[14px] sm:text-[15px] font-semibold leading-tight tracking-[-0.015em] text-[#1C1C1E] dark:text-[#F5F5F7] truncate sm:max-w-[240px]"
             :title="currentRoom?.name"
           >
             {{ currentRoom?.name }}
@@ -709,11 +990,11 @@ onBeforeUnmount(() => {
             type="button"
             @click="handleCopyRoomCode"
             title="点击复制房间号"
-            class="inline-flex items-center gap-1 h-6 px-2 rounded-full text-[12px] font-mono-tabular bg-black/[0.05] text-[#636366] hover:bg-black/[0.09] hover:text-[#1C1C1E] dark:bg-white/[0.09] dark:text-[#98989F] dark:hover:bg-white/[0.15] dark:hover:text-[#F5F5F7] transition-colors shrink-0 cursor-pointer"
+            class="inline-flex items-center gap-1 w-fit text-[11px] leading-tight sm:h-6 sm:px-2 sm:rounded-full sm:text-[12px] font-mono-tabular text-[#8E8E93] sm:bg-black/[0.05] sm:text-[#636366] sm:hover:bg-black/[0.09] hover:text-[#1C1C1E] dark:sm:bg-white/[0.09] dark:sm:text-[#98989F] dark:sm:hover:bg-white/[0.15] dark:hover:text-[#F5F5F7] transition-colors shrink-0 cursor-pointer"
           >
             <span>#{{ currentRoom.code }}</span>
             <Check v-if="copiedCode" class="w-3 h-3 text-[#34C759] dark:text-[#30D158]" />
-            <Copy v-else class="w-3 h-3 opacity-70" />
+            <Copy v-else class="w-2.5 h-2.5 sm:w-3 sm:h-3 opacity-70" />
           </button>
 
           <span class="hidden md:inline text-[13px] text-[#636366] dark:text-[#98989F] whitespace-nowrap shrink-0">
@@ -723,13 +1004,13 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="flex items-center gap-2 shrink-0">
+      <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
         <!-- Share Room Link button -->
         <button
           type="button"
           @click="handleCopyShareLink"
           :title="copiedShare ? '已复制分享链接' : '复制房间分享链接'"
-          class="inline-flex items-center justify-center gap-1.5 h-9 px-3 sm:px-3.5 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 active:scale-[0.96] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] cursor-pointer"
+          class="inline-flex items-center justify-center gap-1.5 h-8 w-8 sm:h-9 sm:w-auto sm:px-3.5 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 active:scale-[0.96] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] cursor-pointer"
           :class="
             copiedShare
               ? 'bg-[#34C759]/15 text-[#248A3D] dark:bg-[#30D158]/20 dark:text-[#30D158]'
@@ -745,7 +1026,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           @click="handleOpenMobileUsers"
-          class="md:hidden inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 bg-black/[0.05] text-[#1C1C1E] hover:bg-black/[0.09] active:scale-[0.96] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-white/[0.15] transition-all cursor-pointer"
+          class="md:hidden inline-flex items-center justify-center gap-1 h-8 px-2.5 rounded-full text-[12px] font-medium whitespace-nowrap shrink-0 bg-black/[0.05] text-[#1C1C1E] hover:bg-black/[0.09] active:scale-[0.96] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-white/[0.15] transition-all cursor-pointer"
           aria-label="查看在线成员"
         >
           <Users class="w-3.5 h-3.5 shrink-0" />
@@ -759,27 +1040,30 @@ onBeforeUnmount(() => {
           :aria-pressed="soundEnabled"
           :aria-label="soundEnabled ? '关闭消息提示音' : '开启消息提示音'"
           :title="soundEnabled ? '已开启消息提示音（点击静音）' : '已静音（点击开启提示音）'"
-          class="inline-flex items-center justify-center h-9 w-9 rounded-full shrink-0 active:scale-[0.96] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] dark:focus-visible:ring-[#0A84FF] cursor-pointer"
+          class="inline-flex items-center justify-center h-8 w-8 sm:h-9 sm:w-9 rounded-full shrink-0 active:scale-[0.96] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] dark:focus-visible:ring-[#0A84FF] cursor-pointer"
           :class="
             soundEnabled
               ? 'bg-black/[0.05] text-[#1C1C1E] hover:bg-black/[0.09] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-white/[0.15]'
               : 'bg-black/[0.04] text-[#8E8E93] hover:bg-black/[0.08] hover:text-[#636366] dark:bg-white/[0.06] dark:text-[#636366] dark:hover:bg-white/[0.12] dark:hover:text-[#98989F]'
           "
         >
-          <Volume2 v-if="soundEnabled" class="w-4 h-4 shrink-0" />
-          <VolumeX v-else class="w-4 h-4 shrink-0" />
+          <Volume2 v-if="soundEnabled" class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+          <VolumeX v-else class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
         </button>
 
-        <ThemeToggle />
+        <ThemeToggle :icon-only-on-mobile="true" />
 
         <button
           type="button"
           @click="leaveRoom"
-          class="inline-flex items-center justify-center gap-1.5 h-9 px-3 sm:px-3.5 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 bg-black/[0.05] text-[#1C1C1E] hover:bg-[#FF3B30]/12 hover:text-[#D70015] active:scale-[0.96] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-[#FF453A]/18 dark:hover:text-[#FF453A] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] cursor-pointer"
+          aria-label="离开房间"
+          title="离开房间"
+          class="inline-flex items-center justify-center gap-1.5 h-8 w-8 sm:h-9 sm:w-auto sm:px-3.5 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 bg-black/[0.05] text-[#1C1C1E] hover:bg-[#FF3B30]/12 hover:text-[#D70015] active:scale-[0.96] dark:bg-white/[0.09] dark:text-[#F5F5F7] dark:hover:bg-[#FF453A]/18 dark:hover:text-[#FF453A] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] cursor-pointer"
         >
           <LogOut class="w-3.5 h-3.5 shrink-0" />
           <span class="hidden sm:inline">离开房间</span>
         </button>
+      </div>
       </div>
     </header>
 
@@ -837,7 +1121,7 @@ onBeforeUnmount(() => {
             @touchstart.passive="handleChatTouchStart"
             @touchend.passive="handleChatTouchEnd"
             @click="handleChatClick"
-            class="flex-1 overflow-y-auto chat-scroll px-3.5 sm:px-7"
+            class="flex-1 overflow-y-auto overflow-x-hidden chat-scroll pl-[max(0.875rem,env(safe-area-inset-left))] pr-[max(0.875rem,env(safe-area-inset-right))] sm:px-7"
             :class="isKeyboardOpen ? 'py-3' : 'py-5 sm:py-6'"
           >
           <div class="max-w-3xl mx-auto w-full flex flex-col">
@@ -975,7 +1259,7 @@ onBeforeUnmount(() => {
                 <div
                   v-else-if="item.kind === 'message' && item.message"
                   :data-message-id="item.message.id"
-                  class="group flex rounded-[18px] transition-colors duration-300"
+                  class="group relative flex rounded-[18px] transition-colors duration-300"
                   :class="[
                     item.isSelf ? 'justify-end' : 'justify-start',
                     item.isCompact ? 'mt-1' : 'mt-4',
@@ -984,10 +1268,28 @@ onBeforeUnmount(() => {
                       : '',
                   ]"
                 >
+                  <!-- Mobile Swipe-to-Reply indicator (appears on the side pulled from) -->
+                  <div
+                    v-if="swipingMessageId === item.message.id && Math.abs(swipeOffsetX) > 12"
+                    class="sm:hidden pointer-events-none absolute top-1/2 -translate-y-1/2 z-0 flex items-center justify-center h-8 w-8 rounded-full transition-all duration-150"
+                    :class="[
+                      swipeOffsetX > 0 ? 'left-1' : 'right-1',
+                      swipeTriggered
+                        ? 'bg-[#007AFF] text-white dark:bg-[#0A84FF] scale-105 shadow-[0_4px_12px_rgba(0,122,255,0.35)]'
+                        : 'bg-black/[0.07] text-[#636366] dark:bg-white/[0.12] dark:text-[#AEAEB2] scale-90',
+                    ]"
+                    :style="{opacity: String(Math.min(1, Math.abs(swipeOffsetX) / SWIPE_TRIGGER_PX))}"
+                    aria-hidden="true"
+                  >
+                    <CornerUpLeft class="w-4 h-4" />
+                  </div>
+
                   <!-- Other user message (iMessage Incoming) -->
                   <div
                     v-if="!item.isSelf"
-                    class="flex items-end gap-2.5 max-w-[88%] sm:max-w-[74%]"
+                    :style="getSwipeRowStyle(item.message.id)"
+                    class="relative z-10 flex items-end gap-2.5 max-w-[86%] sm:max-w-[74%]"
+                    :class="swipingMessageId === item.message.id ? '' : 'transition-transform duration-200 ease-out'"
                   >
                     <div class="w-8 shrink-0">
                       <div
@@ -999,7 +1301,7 @@ onBeforeUnmount(() => {
                       </div>
                     </div>
 
-                    <div class="min-w-0">
+                    <div class="min-w-0 flex flex-col items-start">
                       <div
                         v-if="!item.isCompact"
                         class="flex items-center gap-2 mb-1.5 pl-1"
@@ -1017,30 +1319,24 @@ onBeforeUnmount(() => {
                           @提到了你
                         </span>
                       </div>
-                      <div class="flex items-end gap-1.5">
+
+                      <div class="flex items-end gap-1.5 max-w-full">
                         <div
-                          class="px-4 py-2.5 rounded-[20px] rounded-bl-[6px] text-[15px] leading-[1.48] whitespace-pre-wrap break-words"
-                          :class="
+                          @touchstart.passive="handleBubbleTouchStart($event, item.message)"
+                          @touchmove="handleBubbleTouchMove"
+                          @touchend.passive="handleBubbleTouchEnd"
+                          @touchcancel.passive="cancelBubbleGesture"
+                          @contextmenu="handleBubbleContextMenu"
+                          class="mobile-bubble px-4 py-2.5 rounded-[20px] rounded-bl-[6px] text-[15px] leading-[1.48] whitespace-pre-wrap break-words transition-transform duration-150"
+                          :class="[
                             item.isMentionedSelf
                               ? 'bg-[#FFF7EB] text-[#1C1C1E] ring-1 ring-[#FF9500]/40 dark:bg-[#2B2216] dark:text-[#F5F5F7] dark:ring-[#FF9F0A]/45'
-                              : 'bg-[#E9E9EB] text-[#1C1C1E] dark:bg-[#262629] dark:text-[#F5F5F7]'
-                          "
+                              : 'bg-[#E9E9EB] text-[#1C1C1E] dark:bg-[#262629] dark:text-[#F5F5F7]',
+                            pressingMessageId === item.message.id || floatingMenu?.message.id === item.message.id
+                              ? 'scale-[0.98]'
+                              : '',
+                          ]"
                         >
-                          <!-- Quoted reply block -->
-                          <button
-                            v-if="item.message.replyTo"
-                            type="button"
-                            @click="jumpToMessage(item.message.replyTo.id)"
-                            class="mb-2 w-full text-left px-2.5 py-1.5 rounded-[10px] bg-black/[0.05] hover:bg-black/[0.08] dark:bg-white/[0.08] dark:hover:bg-white/[0.12] border-l-2 border-[#007AFF] dark:border-[#0A84FF] transition-colors cursor-pointer"
-                          >
-                            <div class="text-[11px] font-medium text-[#0066D6] dark:text-[#409CFF] truncate">
-                              {{ item.message.replyTo.senderName }}
-                            </div>
-                            <div class="text-[12px] text-[#636366] dark:text-[#98989F] truncate">
-                              {{ item.message.replyTo.contentSnippet }}
-                            </div>
-                          </button>
-
                           <MessageContent
                             :content="item.message.content"
                             :is-self="false"
@@ -1049,25 +1345,56 @@ onBeforeUnmount(() => {
                           />
                         </div>
 
-                        <!-- Reply action button -->
-                        <button
-                          v-if="canReplyMessage(item.message)"
-                          type="button"
-                          @click="startReply(item.message)"
-                          title="回复此消息"
-                          aria-label="回复此消息"
-                          class="h-7 w-7 rounded-full inline-flex items-center justify-center shrink-0 text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] opacity-65 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 transition-all cursor-pointer"
+                        <!-- Desktop-only hover actions (mobile uses swipe-to-reply + long-press capsule) -->
+                        <div
+                          class="hidden sm:flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
                         >
-                          <CornerUpLeft class="w-3.5 h-3.5" />
-                        </button>
+                          <button
+                            v-if="canReplyMessage(item.message)"
+                            type="button"
+                            @click="startReply(item.message)"
+                            title="回复"
+                            aria-label="回复此消息"
+                            class="h-7 w-7 rounded-full inline-flex items-center justify-center text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] transition-colors cursor-pointer"
+                          >
+                            <CornerUpLeft class="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            @click="handleCopyMessage(item.message)"
+                            title="复制"
+                            aria-label="复制消息内容"
+                            class="h-7 w-7 rounded-full inline-flex items-center justify-center text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] transition-colors cursor-pointer"
+                          >
+                            <Copy class="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
+
+                      <!-- Minimal quoted reply below bubble -->
+                      <button
+                        v-if="item.message.replyTo"
+                        type="button"
+                        @click="jumpToMessage(item.message.replyTo.id)"
+                        class="mt-1.5 max-w-full inline-flex items-stretch gap-2 pl-0.5 text-left text-[12px] leading-[1.4] text-[#8E8E93] hover:text-[#636366] dark:text-[#8E8E93] dark:hover:text-[#AEAEB2] transition-colors cursor-pointer"
+                      >
+                        <span
+                          class="w-[2px] rounded-full bg-black/15 dark:bg-white/20 shrink-0 my-0.5"
+                          aria-hidden="true"
+                        />
+                        <span class="min-w-0 line-clamp-2 break-words">
+                          {{ item.message.replyTo.senderName }}: {{ item.message.replyTo.contentSnippet }}
+                        </span>
+                      </button>
                     </div>
                   </div>
 
                   <!-- Self message (iMessage Outgoing) -->
                   <div
                     v-else
-                    class="flex flex-col items-end max-w-[88%] sm:max-w-[74%]"
+                    :style="getSwipeRowStyle(item.message.id)"
+                    class="relative z-10 flex flex-col items-end max-w-[86%] sm:max-w-[74%]"
+                    :class="swipingMessageId === item.message.id ? '' : 'transition-transform duration-200 ease-out'"
                   >
                     <div
                       v-if="!item.isCompact"
@@ -1080,6 +1407,7 @@ onBeforeUnmount(() => {
                         我
                       </span>
                     </div>
+
                     <div class="flex items-end justify-end gap-1.5 max-w-full">
                       <!-- Sending spinner -->
                       <span
@@ -1091,68 +1419,81 @@ onBeforeUnmount(() => {
                         <Loader2 class="w-3.5 h-3.5 animate-spin" />
                       </span>
 
-                      <!-- Failed one-click retry button -->
+                      <!-- Failed one-click retry icon (WeChat/iMessage style red exclamation badge) -->
                       <button
                         v-else-if="item.message.sendStatus === 'failed'"
                         type="button"
                         @click="handleRetry(item.message)"
-                        :title="item.message.failReason || '发送失败，点击重发'"
-                        aria-label="重新发送消息"
-                        class="inline-flex items-center self-center gap-1 h-7 px-2.5 rounded-full text-[12px] font-medium shrink-0 bg-[#FF3B30]/12 text-[#D70015] hover:bg-[#FF3B30]/20 active:scale-95 dark:bg-[#FF453A]/18 dark:text-[#FF453A] dark:hover:bg-[#FF453A]/28 transition-all cursor-pointer"
+                        :title="
+                          item.message.failReason
+                            ? `${item.message.failReason}，点击重发`
+                            : '发送失败，点击重发'
+                        "
+                        aria-label="发送失败，点击重发"
+                        class="h-7 w-7 rounded-full inline-flex items-center justify-center self-center shrink-0 active:scale-90 transition-transform cursor-pointer group/retry"
                       >
-                        <AlertCircle class="w-3.5 h-3.5 shrink-0" />
-                        <span>重发</span>
+                        <span
+                          class="h-[20px] w-[20px] rounded-full bg-[#FF3B30] group-hover/retry:bg-[#E03126] dark:bg-[#FF453A] dark:group-hover/retry:bg-[#FF6961] text-white inline-flex items-center justify-center shadow-[0_1px_3px_rgba(255,59,48,0.28)] transition-colors"
+                          aria-hidden="true"
+                        >
+                          <svg viewBox="0 0 16 16" class="w-3 h-3 fill-current">
+                            <rect x="7" y="3.2" width="2" height="6.2" rx="1" />
+                            <circle cx="8" cy="11.9" r="1.2" />
+                          </svg>
+                        </span>
                       </button>
 
-                      <!-- Reply & Revoke action buttons for sent self messages -->
+                      <!-- Desktop-only hover actions (mobile uses swipe-to-reply + long-press capsule) -->
                       <div
-                        v-else-if="canReplyMessage(item.message)"
-                        class="flex items-center gap-0.5 shrink-0 opacity-65 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
+                        v-else
+                        class="hidden sm:flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
                       >
                         <button
                           v-if="canRevokeMessage(item.message)"
                           type="button"
                           @click="handleRevoke(item.message)"
-                          title="撤回消息（2 分钟内）"
+                          title="撤回（2 分钟内）"
                           aria-label="撤回消息"
                           class="h-7 w-7 rounded-full inline-flex items-center justify-center text-[#8E8E93] hover:text-[#D70015] hover:bg-[#FF3B30]/10 dark:hover:text-[#FF453A] dark:hover:bg-[#FF453A]/15 transition-colors cursor-pointer"
                         >
                           <Undo2 class="w-3.5 h-3.5" />
                         </button>
                         <button
+                          v-if="canReplyMessage(item.message)"
                           type="button"
                           @click="startReply(item.message)"
-                          title="回复此消息"
+                          title="回复"
                           aria-label="回复此消息"
                           class="h-7 w-7 rounded-full inline-flex items-center justify-center text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] transition-colors cursor-pointer"
                         >
                           <CornerUpLeft class="w-3.5 h-3.5" />
                         </button>
+                        <button
+                          type="button"
+                          @click="handleCopyMessage(item.message)"
+                          title="复制"
+                          aria-label="复制消息内容"
+                          class="h-7 w-7 rounded-full inline-flex items-center justify-center text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] transition-colors cursor-pointer"
+                        >
+                          <Copy class="w-3.5 h-3.5" />
+                        </button>
                       </div>
 
                       <div
-                        class="px-4 py-2.5 rounded-[20px] rounded-br-[6px] bg-gradient-to-b from-[#1A8BFF] to-[#007AFF] dark:from-[#1A8FFF] dark:to-[#0A84FF] text-white text-[15px] leading-[1.48] whitespace-pre-wrap break-words shadow-[0_1px_2px_rgba(0,122,255,0.18)] transition-opacity duration-150"
+                        @touchstart.passive="handleBubbleTouchStart($event, item.message)"
+                        @touchmove="handleBubbleTouchMove"
+                        @touchend.passive="handleBubbleTouchEnd"
+                        @touchcancel.passive="cancelBubbleGesture"
+                        @contextmenu="handleBubbleContextMenu"
+                        class="mobile-bubble px-4 py-2.5 rounded-[20px] rounded-br-[6px] bg-gradient-to-b from-[#1A8BFF] to-[#007AFF] dark:from-[#1A8FFF] dark:to-[#0A84FF] text-white text-[15px] leading-[1.48] whitespace-pre-wrap break-words shadow-[0_1px_2px_rgba(0,122,255,0.18)] transition-all duration-150"
                         :class="{
                           'opacity-75': item.message.sendStatus === 'sending',
-                          'opacity-90 ring-1 ring-[#FF3B30]/45 dark:ring-[#FF453A]/50':
-                            item.message.sendStatus === 'failed',
+                          'opacity-85': item.message.sendStatus === 'failed',
+                          'scale-[0.98]':
+                            pressingMessageId === item.message.id ||
+                            floatingMenu?.message.id === item.message.id,
                         }"
                       >
-                        <!-- Quoted reply block -->
-                        <button
-                          v-if="item.message.replyTo"
-                          type="button"
-                          @click="jumpToMessage(item.message.replyTo.id)"
-                          class="mb-2 w-full text-left px-2.5 py-1.5 rounded-[10px] bg-white/15 hover:bg-white/22 border-l-2 border-white/80 transition-colors cursor-pointer"
-                        >
-                          <div class="text-[11px] font-medium text-white/95 truncate">
-                            {{ item.message.replyTo.senderName }}
-                          </div>
-                          <div class="text-[12px] text-white/80 truncate">
-                            {{ item.message.replyTo.contentSnippet }}
-                          </div>
-                        </button>
-
                         <MessageContent
                           :content="item.message.content"
                           :is-self="true"
@@ -1162,12 +1503,21 @@ onBeforeUnmount(() => {
                       </div>
                     </div>
 
-                    <span
-                      v-if="item.message.sendStatus === 'failed' && item.message.failReason"
-                      class="mt-1 pr-1 text-[11px] text-[#FF3B30] dark:text-[#FF453A]"
+                    <!-- Minimal quoted reply below bubble -->
+                    <button
+                      v-if="item.message.replyTo"
+                      type="button"
+                      @click="jumpToMessage(item.message.replyTo.id)"
+                      class="mt-1.5 max-w-full inline-flex items-stretch justify-end gap-2 pr-0.5 text-right text-[12px] leading-[1.4] text-[#8E8E93] hover:text-[#636366] dark:text-[#8E8E93] dark:hover:text-[#AEAEB2] transition-colors cursor-pointer"
                     >
-                      {{ item.message.failReason }}
-                    </span>
+                      <span class="min-w-0 line-clamp-2 break-words">
+                        {{ item.message.replyTo.senderName }}: {{ item.message.replyTo.contentSnippet }}
+                      </span>
+                      <span
+                        class="w-[2px] rounded-full bg-black/15 dark:bg-white/20 shrink-0 my-0.5"
+                        aria-hidden="true"
+                      />
+                    </button>
                   </div>
                 </div>
               </template>
@@ -1208,11 +1558,11 @@ onBeforeUnmount(() => {
 
         <!-- Frosted iOS Bottom Composer -->
         <div
-          class="shrink-0 ios-glass-bar border-t border-black/[0.06] dark:border-white/[0.08] px-3 sm:px-7"
+          class="shrink-0 ios-glass-bar border-t border-black/[0.06] dark:border-white/[0.08] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] sm:px-7"
           :class="
             isKeyboardOpen
               ? 'py-2'
-              : 'pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:py-3'
+              : 'pt-2.5 pb-[max(0.75rem,calc(env(safe-area-inset-bottom)+0.375rem))] sm:py-3'
           "
         >
           <div class="max-w-3xl mx-auto w-full relative">
@@ -1277,23 +1627,21 @@ onBeforeUnmount(() => {
             <Transition name="popover">
               <div
                 v-if="replyingTo"
-                class="mb-2 px-3 py-2 rounded-[14px] bg-[#F2F2F7] dark:bg-[#1C1C1E] ring-1 ring-black/[0.06] dark:ring-white/[0.09] flex items-center gap-2.5"
+                class="mb-2 pl-3 pr-2 py-2 rounded-[14px] bg-[#F2F2F7]/95 dark:bg-[#1C1C1E] ring-1 ring-black/[0.05] dark:ring-white/[0.08] flex items-stretch gap-2.5"
               >
-                <CornerUpLeft class="w-4 h-4 text-[#007AFF] dark:text-[#0A84FF] shrink-0" />
-                <div class="min-w-0 flex-1 border-l-2 border-[#007AFF] dark:border-[#0A84FF] pl-2.5">
-                  <div class="text-[12px] font-medium text-[#0066D6] dark:text-[#409CFF] truncate">
-                    回复 {{ replyingTo.senderName }}
-                  </div>
-                  <div class="text-[12px] text-[#636366] dark:text-[#98989F] truncate">
-                    {{ replyingTo.contentSnippet }}
-                  </div>
+                <span
+                  class="w-[2px] rounded-full bg-black/20 dark:bg-white/25 shrink-0 my-0.5"
+                  aria-hidden="true"
+                />
+                <div class="min-w-0 flex-1 text-[12px] leading-[1.45] text-[#636366] dark:text-[#98989F] truncate self-center">
+                  {{ replyingTo.senderName }}: {{ replyingTo.contentSnippet }}
                 </div>
                 <button
                   type="button"
                   @click="cancelReply"
                   aria-label="取消回复"
                   title="取消回复 (Esc)"
-                  class="h-7 w-7 rounded-full inline-flex items-center justify-center text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] shrink-0 transition-colors cursor-pointer"
+                  class="self-center h-7 w-7 rounded-full inline-flex items-center justify-center text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] shrink-0 transition-colors cursor-pointer"
                 >
                   <X class="w-3.5 h-3.5" />
                 </button>
@@ -1391,6 +1739,91 @@ onBeforeUnmount(() => {
         />
       </aside>
     </div>
+
+    <!-- Subtle Copy Toast -->
+    <Transition name="popover">
+      <div
+        v-if="copiedToast"
+        role="status"
+        class="fixed top-[calc(4rem+env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-50 inline-flex items-center gap-1.5 h-8 px-3.5 rounded-full ios-glass-popover ring-1 ring-black/[0.08] dark:ring-white/[0.12] shadow-[0_8px_24px_rgba(0,0,0,0.14)] text-[12px] font-medium text-[#1C1C1E] dark:text-[#F5F5F7] pointer-events-none"
+      >
+        <Check class="w-3.5 h-3.5 text-[#34C759] dark:text-[#30D158]" />
+        <span>{{ copiedToast }}</span>
+      </div>
+    </Transition>
+
+    <!-- Mobile Long-Press Floating Capsule Above Bubble -->
+    <Transition name="popover">
+      <div
+        v-if="floatingMenu"
+        role="menu"
+        aria-label="消息操作菜单"
+        class="fixed inset-0 z-50"
+        @click="handleFloatingBackdropClick"
+        @touchstart.self.passive="closeFloatingMenu"
+      >
+        <div
+          @click.stop
+          class="fixed z-10"
+          :style="{
+            top: `${floatingMenu.top}px`,
+            left: `${floatingMenu.left}px`,
+            transform: floatingMenu.placeBelow ? 'translateY(0)' : 'translateY(-100%)',
+          }"
+        >
+          <!-- Pointer Arrow (above when flipped below, below when placed above) -->
+          <span
+            v-if="floatingMenu.placeBelow"
+            class="block absolute -top-1.5 h-3 w-3 rotate-45 bg-[#1C1C1E]/95 dark:bg-[#2C2C2E]/95 ring-1 ring-white/[0.1] pointer-events-none"
+            :style="{left: `${floatingMenu.arrowLeft - 6}px`}"
+            aria-hidden="true"
+          />
+
+          <div
+            class="relative flex items-center rounded-[14px] bg-[#1C1C1E]/95 dark:bg-[#2C2C2E]/96 text-white backdrop-blur-xl ring-1 ring-white/[0.12] shadow-[0_14px_34px_rgba(0,0,0,0.34)] divide-x divide-white/[0.1] overflow-hidden"
+          >
+            <button
+              v-if="canReplyMessage(floatingMenu.message)"
+              type="button"
+              role="menuitem"
+              @click="handleFloatingReply"
+              class="min-w-[58px] px-3 py-2 inline-flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-white/95 active:bg-white/[0.14] transition-colors cursor-pointer"
+            >
+              <CornerUpLeft class="w-4 h-4 shrink-0" />
+              <span>回复</span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              @click="handleFloatingCopy"
+              class="min-w-[58px] px-3 py-2 inline-flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-white/95 active:bg-white/[0.14] transition-colors cursor-pointer"
+            >
+              <Copy class="w-4 h-4 shrink-0" />
+              <span>复制</span>
+            </button>
+
+            <button
+              v-if="canRevokeMessage(floatingMenu.message)"
+              type="button"
+              role="menuitem"
+              @click="handleFloatingRevoke"
+              class="min-w-[58px] px-3 py-2 inline-flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-[#FF6961] active:bg-[#FF453A]/20 transition-colors cursor-pointer"
+            >
+              <Undo2 class="w-4 h-4 shrink-0" />
+              <span>撤回</span>
+            </button>
+          </div>
+
+          <span
+            v-if="!floatingMenu.placeBelow"
+            class="block absolute -bottom-1.5 h-3 w-3 rotate-45 bg-[#1C1C1E]/95 dark:bg-[#2C2C2E]/95 ring-1 ring-white/[0.1] pointer-events-none"
+            :style="{left: `${floatingMenu.arrowLeft - 6}px`}"
+            aria-hidden="true"
+          />
+        </div>
+      </div>
+    </Transition>
 
     <!-- Mobile Online Users Drawer -->
     <Transition name="view-fade">

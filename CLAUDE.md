@@ -9,9 +9,6 @@ MyChat is a Spring Boot 3.4.3 (Java 21, Maven) chat application. REST and WebSoc
 - **REST API** — Spring Boot embedded Tomcat on port `8080`.
 - **WebSocket** — Spring native WebSocket registered at `/ws` on the same Tomcat. `config/WebSocketConfig` (`WebSocketConfigurer`) wires `websocket/ChatWebSocketHandler`; a `HandshakeInterceptor` reads the `guest_id` cookie (anonymous identity) and captures the client IP before the connection is established.
 
-Two separate auth paths coexist:
-
-- **Admin REST login** (`POST /api/auth/login`) still uses JWT via `JwtAuthFilter` (demo scaffolding, hardcoded `admin`).
 - **Chat (guest) identity** uses an opaque `anonId` stored in an `HttpOnly` cookie (`guest_id`). No password/WeChat login — a user just picks a nickname. See the guest flow below.
 
 The frontend is a separate Vue 3 + Vite + Tailwind app in `frontend/` (text-only chat, WS-based). In dev it talks to Spring through a Vite proxy; production serving of `dist/` from Spring is not wired up.
@@ -36,14 +33,13 @@ The app requires MySQL; the datasource (host, credentials) is in `src/main/resou
 
 Package root: `org.zz.mychat`.
 
-- `controller/` — `LoginController` (admin JWT login), `GuestAuthController` (`/api/auth/me` + `/api/auth/clear`), `RoomController` (`/api/rooms` create + `/api/rooms/{code}` lookup), `HelloController` (event demo). Return `ApiResult<T>`.
-- `service/` — `GuestService` (anonymous identity: anonId + user upsert), `RoomService` (room creation, 6-digit code generation, BCrypt password verification), `MessageService` (persist/load chat history per room), `UserDetailsServiceImpl` (admin lookup).
+- `controller/` — `GuestAuthController` (`/api/auth/me` + `/api/auth/clear`), `RoomController` (`/api/rooms` create + `/api/rooms/recent` + `/api/rooms/{code}` lookup). Return `ApiResult<T>`.
+- `service/` — `GuestService` (anonymous identity: anonId + user upsert), `RoomService` (room creation, 6-digit code generation, BCrypt password verification), `MessageService` (persist/load chat history per room with cursor pagination), `RateLimitService` (Guava sliding-window & password lockout).
 - `mapper/` — MyBatis-Plus mappers (`UserMapper`, `RoomMapper`, `MessageMapper` extend `BaseMapper`).
-- `domain/` — `User` (maps `user` table, implements `UserDetails`), `Room` (maps `room` table), `Message` (maps `message` table with `room_id`).
-- `config/` — `SecurityConfig`, `JwtConfig`, `SwaggerConfig`, `WebSocketConfig`.
+- `domain/` — `User` (maps `user` table), `Room` (maps `room` table), `Message` (maps `message` table with `room_id`).
+- `config/` — `SecurityConfig`, `SwaggerConfig`, `WebSocketConfig`.
 - `websocket/` — `ChatWebSocketHandler`, `OnlineUserManager`, `GuestUser`.
-- `common/` — `filter/JwtAuthFilter`, `utils/` (JWT, `ApiResult`), `enums/`.
-- `event/` — Spring `ApplicationEvent` demo (`MessagePublisher`/`MessageListener`).
+- `common/` — `utils/` (`ApiResult`, `ClientIpUtils`), `enums/`.
 
 ### Guest identity + chat flow
 
@@ -62,12 +58,8 @@ Wire message shape: `{id: string, type: "text"|"system", senderId: anonId, sende
 
 ## Gotchas
 
-- **Hardcoded secrets/credentials** live in `application.yml` (MySQL host/username/password, JWT secret) and in `UserDetailsServiceImpl` (admin password hash). Do not copy these into new code.
-- **DB schema migration required.** `user` needs `anon_id/avatar_color/ip/first_seen_at/last_seen_at/nickname` columns, and `message` is recreated with `sender_id/avatar_color/create_time(BIGINT ms)` — see `src/main/resources/db/schema.sql`. Run it before starting, or MyBatis-Plus queries fail on unknown columns.
+- **Externalized credentials & CORS**: `application.yml` uses `${SPRING_DATASOURCE_URL}`, `${SPRING_DATASOURCE_USERNAME}`, `${SPRING_DATASOURCE_PASSWORD}`, and `${MYCHAT_ALLOWED_ORIGIN_PATTERNS}`. For local dev, copy `application-dev.yml.example` to `application-dev.yml` (gitignored) and run with `-Dspring-boot.run.profiles=dev`. In production, set `MYCHAT_ALLOWED_ORIGIN_PATTERNS` to the actual frontend domain (do not use `*`).
+- **DB schema migration required.** `user`, `room`, and `message` (with `room_id`) tables must be initialized — see `src/main/resources/db/init.sql` (fresh DB) or `schema.sql` (upgrade).
 - **Identity is the `guest_id` cookie, not the nickname.** `anonId` is the stable ID; nickname/avatarColor are mutable (changing nickname updates the same `user` row). `message.sender_id` stores the `anonId` (string), not `user.id` (numeric).
-- **Frontend is WS-only + text-only.** No image/emoji upload (removed along with WeChat login). The Vite dev proxy forwards `/api` and `/ws` to `:8080`.
-- **`mapper/UserInterface.java` is dead code** — unused stub implementing `IService<User>`; use `UserMapper` instead.
-- **`config/SwaggerServerCustomizer.java` is `@Deprecated`** with its `@Component` commented out.
-- **`src/test/java/.../Test.java` and `test1.java` are scratch `main()` files**, not JUnit tests. Real tests: `MyChatApplicationTests`, `MybatisTest`.
-- **`ApiResult.fail(String code, String msg, T data)` is buggy** — sets `success=true` and drops `code`/`msg`. Prefer `ApiResult.fail(ResultEnum)`.
-- `MybatisTest` asserts hardcoded DB state (`5 == userList.size()`), so it fails against a fresh/empty database.
+- **Frontend is WS-only + text-only.** The Vite dev proxy forwards `/api` and `/ws` to `:8080`.
+- **Unit tests without DB**: Run `./mvnw test -Dtest=RateLimitServiceTest,OnlineUserManagerTest,MessageServiceTest`. `MyChatApplicationTests` boots the full Spring context and requires a reachable MySQL datasource.

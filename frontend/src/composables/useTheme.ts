@@ -21,7 +21,17 @@ const theme = ref<ThemeMode>(detectInitialTheme());
 
 function applyTheme(mode: ThemeMode): void {
   if (typeof document === 'undefined') return;
-  document.documentElement.classList.toggle('dark', mode === 'dark');
+  const isDark = mode === 'dark';
+  document.documentElement.classList.toggle('dark', isDark);
+
+  const color = isDark ? '#000000' : '#FFFFFF';
+  const themeMeta =
+    document.getElementById('theme-color-meta') ||
+    document.querySelector('meta[name="theme-color"]:not([media])');
+  if (themeMeta) {
+    themeMeta.setAttribute('content', color);
+  }
+
   try {
     localStorage.setItem(STORAGE_KEY, mode);
   } catch {

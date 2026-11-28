@@ -59,27 +59,32 @@ const statusMeta = computed(() => {
   <div class="flex flex-col h-full bg-[#F5F5F7] dark:bg-[#141416]">
     <!-- Sidebar Header -->
     <div
-      class="h-14 shrink-0 px-5 flex items-center justify-between border-b border-black/[0.06] dark:border-white/[0.08]"
+      class="shrink-0 border-b border-black/[0.06] dark:border-white/[0.08]"
+      :class="showCloseButton ? 'pt-[env(safe-area-inset-top)]' : ''"
     >
-      <div class="flex items-center gap-2 min-w-0">
-        <h2 class="text-[13px] font-semibold tracking-tight text-[#1C1C1E] dark:text-[#F5F5F7] whitespace-nowrap">
-          在线成员
-        </h2>
-        <span class="text-black/20 dark:text-white/20" aria-hidden="true">·</span>
-        <span class="text-xs font-mono-tabular text-[#636366] dark:text-[#98989F]">
-          {{ users.length }}
-        </span>
-      </div>
-
-      <button
-        v-if="showCloseButton"
-        type="button"
-        @click="emit('close')"
-        aria-label="关闭在线成员列表"
-        class="h-8 w-8 inline-flex items-center justify-center rounded-full bg-black/[0.05] text-[#636366] hover:bg-black/[0.09] hover:text-[#1C1C1E] dark:bg-white/[0.09] dark:text-[#98989F] dark:hover:bg-white/[0.15] dark:hover:text-[#F5F5F7] transition-colors cursor-pointer"
+      <div
+        class="h-14 pl-5 pr-[max(1.25rem,env(safe-area-inset-right))] flex items-center justify-between"
       >
-        <X class="w-4 h-4" />
-      </button>
+        <div class="flex items-center gap-2 min-w-0">
+          <h2 class="text-[13px] font-semibold tracking-tight text-[#1C1C1E] dark:text-[#F5F5F7] whitespace-nowrap">
+            在线成员
+          </h2>
+          <span class="text-black/20 dark:text-white/20" aria-hidden="true">·</span>
+          <span class="text-xs font-mono-tabular text-[#636366] dark:text-[#98989F]">
+            {{ users.length }}
+          </span>
+        </div>
+
+        <button
+          v-if="showCloseButton"
+          type="button"
+          @click="emit('close')"
+          aria-label="关闭在线成员列表"
+          class="h-8 w-8 inline-flex items-center justify-center rounded-full bg-black/[0.05] text-[#636366] hover:bg-black/[0.09] hover:text-[#1C1C1E] dark:bg-white/[0.09] dark:text-[#98989F] dark:hover:bg-white/[0.15] dark:hover:text-[#F5F5F7] transition-colors cursor-pointer"
+        >
+          <X class="w-4 h-4" />
+        </button>
+      </div>
     </div>
 
     <!-- Member List -->
@@ -140,7 +145,7 @@ const statusMeta = computed(() => {
     <!-- Self Status Footer -->
     <div
       v-if="currentUser"
-      class="shrink-0 px-5 py-3.5 border-t border-black/[0.06] dark:border-white/[0.08] bg-white/60 dark:bg-[#1C1C1E]/60"
+      class="shrink-0 pl-5 pr-[max(1.25rem,env(safe-area-inset-right))] pt-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))] border-t border-black/[0.06] dark:border-white/[0.08] bg-white/60 dark:bg-[#1C1C1E]/60"
     >
       <div class="flex items-center justify-between gap-2 text-xs">
         <span class="text-[#636366] dark:text-[#98989F] truncate">

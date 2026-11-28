@@ -83,6 +83,13 @@ const createIsPrivate = ref(false);
 const createPassword = ref('');
 const showCreatePassword = ref(false);
 const isCreating = ref(false);
+// 防止建房成功但 WS 入房失败后，点击重试重复调用 POST /api/rooms
+const pendingCreatedRoom = ref<{
+  code: string;
+  name: string;
+  isPrivate: boolean;
+  password?: string;
+} | null>(null);
 
 // DOM refs
 const nicknameInputRef = ref<HTMLInputElement | null>(null);
@@ -132,6 +139,18 @@ watch(joinRoomCode, (val) => {
     joinPassword.value = '';
   }
   clearAllErrors();
+});
+
+// 修改创建表单参数时，清空待重试的已建房间缓存
+watch([createRoomName, createIsPrivate, createPassword], () => {
+  const pending = pendingCreatedRoom.value;
+  if (!pending) return;
+  const sameName = pending.name === createRoomName.value.trim();
+  const samePrivacy = pending.isPrivate === createIsPrivate.value;
+  const samePassword = !createIsPrivate.value || pending.password === createPassword.value;
+  if (!sameName || !samePrivacy || !samePassword) {
+    pendingCreatedRoom.value = null;
+  }
 });
 
 watch(actionTab, (tab) => {
@@ -415,27 +434,56 @@ async function handleCreateRoomSubmit(): Promise<void> {
     }
   }
 
-  isCreating.value = true;
-  const created = await createRoomApi({
-    name: createNameTrimmed.value,
-    isPrivate: createIsPrivate.value,
-    password: createIsPrivate.value ? createPassword.value : undefined,
-  });
-  isCreating.value = false;
+  let targetCode: string;
+  const pending = pendingCreatedRoom.value;
+  const canReusePending = Boolean(
+    pending &&
+      pending.name === createNameTrimmed.value &&
+      pending.isPrivate === createIsPrivate.value &&
+      (!createIsPrivate.value || pending.password === createPassword.value)
+  );
 
-  if (!created.ok) {
-    localError.value = created.message;
-    return;
+  if (canReusePending && pending) {
+    targetCode = pending.code;
+  } else {
+    isCreating.value = true;
+    const created = await createRoomApi({
+      name: createNameTrimmed.value,
+      isPrivate: createIsPrivate.value,
+      password: createIsPrivate.value ? createPassword.value : undefined,
+    });
+    isCreating.value = false;
+
+    if (!created.ok) {
+      localError.value = created.message;
+      return;
+    }
+
+    targetCode = created.room.code;
+    pendingCreatedRoom.value = {
+      code: targetCode,
+      name: createNameTrimmed.value,
+      isPrivate: createIsPrivate.value,
+      password: createIsPrivate.value ? createPassword.value : undefined,
+    };
   }
 
   const res = await joinRoom({
     nickname: trimmedNickname.value,
     avatarColor: avatarColor.value,
-    roomCode: created.room.code,
+    roomCode: targetCode,
     password: createIsPrivate.value ? createPassword.value : undefined,
   });
-  if (!res.ok) {
-    localError.value = res.message || '房间已创建，但进入失败，请稍后重试';
+  if (res.ok) {
+    pendingCreatedRoom.value = null;
+  } else {
+    if (res.code === 'ROOM_NOT_FOUND') {
+      pendingCreatedRoom.value = null;
+    }
+    const reason = res.message ? `（${res.message}）` : '';
+    localError.value = pendingCreatedRoom.value
+      ? `房间 #${targetCode} 已创建，但进入失败${reason}，点击下方按钮可直接重试进入`
+      : res.message || '房间已创建，但进入失败，请稍后重试';
   }
 }
 
@@ -576,25 +624,29 @@ onMounted(async () => {
   >
     <!-- Frosted iOS Top Bar -->
     <header
-      class="sticky top-0 z-20 h-16 px-6 sm:px-10 flex items-center justify-between gap-8 ios-glass-bar border-b border-black/[0.06] dark:border-white/[0.08] shrink-0"
+      class="sticky top-0 z-20 pt-[env(safe-area-inset-top)] ios-glass-bar border-b border-black/[0.06] dark:border-white/[0.08] shrink-0"
     >
-      <div class="flex items-center gap-2.5 whitespace-nowrap shrink-0">
-        <span
-          class="h-8 w-8 rounded-[10px] bg-gradient-to-b from-[#3395FF] to-[#007AFF] dark:from-[#2997FF] dark:to-[#0A84FF] text-white inline-flex items-center justify-center shrink-0 shadow-[0_2px_8px_rgba(0,122,255,0.28)]"
-          aria-hidden="true"
-        >
-          <MessageSquare class="w-4 h-4 fill-white/15" />
-        </span>
-        <span class="text-[17px] font-semibold tracking-[-0.02em] text-[#1C1C1E] dark:text-[#F5F5F7]">
-          MyChat
-        </span>
-      </div>
+      <div
+        class="h-16 pl-[max(1.5rem,env(safe-area-inset-left))] pr-[max(1.5rem,env(safe-area-inset-right))] sm:px-10 flex items-center justify-between gap-8"
+      >
+        <div class="flex items-center gap-2.5 whitespace-nowrap shrink-0">
+          <span
+            class="h-8 w-8 rounded-[10px] bg-gradient-to-b from-[#3395FF] to-[#007AFF] dark:from-[#2997FF] dark:to-[#0A84FF] text-white inline-flex items-center justify-center shrink-0 shadow-[0_2px_8px_rgba(0,122,255,0.28)]"
+            aria-hidden="true"
+          >
+            <MessageSquare class="w-4 h-4 fill-white/15" />
+          </span>
+          <span class="text-[17px] font-semibold tracking-[-0.02em] text-[#1C1C1E] dark:text-[#F5F5F7]">
+            MyChat
+          </span>
+        </div>
 
-      <ThemeToggle />
+        <ThemeToggle />
+      </div>
     </header>
 
     <!-- Main Centered iOS Sheet -->
-    <main class="flex-1 flex items-center justify-center px-5 pt-8 pb-[max(2.5rem,env(safe-area-inset-bottom))] sm:py-14">
+    <main class="flex-1 flex items-center justify-center pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))] pt-8 pb-[max(2.5rem,calc(env(safe-area-inset-bottom)+1.25rem))] sm:px-5 sm:py-14">
       <div class="w-full max-w-[440px]">
         <div
           class="rounded-[28px] bg-white dark:bg-[#1C1C1E] p-7 sm:p-9 ring-1 ring-black/[0.04] dark:ring-white/[0.08] shadow-[0_24px_60px_-18px_rgba(0,0,0,0.09)] dark:shadow-[0_28px_70px_-16px_rgba(0,0,0,0.7)]"
@@ -1602,7 +1654,9 @@ onMounted(async () => {
                       ? '正在创建房间...'
                       : status === 'connecting'
                         ? '正在进入房间...'
-                        : '创建并进入房间'
+                        : pendingCreatedRoom
+                          ? `重试进入房间 #${pendingCreatedRoom.code}`
+                          : '创建并进入房间'
                   }}
                 </span>
                 <ArrowRight v-if="!isBusy" class="w-4 h-4 shrink-0" />
