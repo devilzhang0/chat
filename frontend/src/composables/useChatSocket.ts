@@ -253,6 +253,7 @@ const currentRoom = ref<RoomInfo | null>(null);
 const lastProfile = ref<SavedProfile | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const lastIncomingMessage = ref<ChatMessage | null>(null);
+const lastRevokedMessageId = ref<string | null>(null);
 const onlineUsers = ref<OnlineUser[]>([]);
 const status = ref<ConnectionStatus>('idle');
 const isLoadingHistory = ref(false);
@@ -485,6 +486,37 @@ function upsertMessageIdempotent(incoming: ChatMessage, clientTempId?: string): 
   return true;
 }
 
+function applyMessageRevoked(messageId: string, revokedBy?: string): void {
+  let changed = false;
+  const next = messages.value.map((m) => {
+    if (m.id === messageId) {
+      changed = true;
+      return {
+        ...m,
+        revoked: true,
+        content: '',
+        senderName: revokedBy || m.senderName,
+        replyTo: undefined,
+      };
+    }
+    if (m.replyTo && m.replyTo.id === messageId && m.replyTo.contentSnippet !== '原消息已撤回') {
+      changed = true;
+      return {
+        ...m,
+        replyTo: {
+          ...m.replyTo,
+          contentSnippet: '原消息已撤回',
+        },
+      };
+    }
+    return m;
+  });
+  if (changed) {
+    messages.value = next;
+  }
+  lastRevokedMessageId.value = messageId;
+}
+
 function mergeHistoryIdempotent(
   serverMessages: ChatMessage[],
   isSameRoomReconnect: boolean,
@@ -493,15 +525,29 @@ function mergeHistoryIdempotent(
   const localFailed = isSameRoomReconnect
     ? messages.value.filter((m) => m.sendStatus === 'failed')
     : [];
-  const serverIds = new Set(serverMessages.map((m) => m.id));
+  const serverById = new Map(serverMessages.map((m) => [m.id, m]));
   const hasOverlap =
     isSameRoomReconnect &&
     messages.value.length > 0 &&
-    messages.value.some((m) => serverIds.has(m.id));
+    messages.value.some((m) => serverById.has(m.id));
 
   if (hasOverlap) {
-    // 断线重连且历史衔接不断层：保留用户已向上翻阅的更早消息，仅补充断线期间的新消息
-    const existingIds = new Set(messages.value.map((m) => m.id));
+    // 断线重连且历史衔接不断层：保留用户已向上翻阅的更早消息，同步断线期间的撤回态并补充新消息
+    const existingIds = new Set<string>();
+    messages.value = messages.value.map((m) => {
+      existingIds.add(m.id);
+      const latest = serverById.get(m.id);
+      if (latest) {
+        return {
+          ...m,
+          content: latest.content,
+          revoked: latest.revoked,
+          replyTo: latest.replyTo,
+          sendStatus: 'sent',
+        };
+      }
+      return m;
+    });
     for (const msg of serverMessages) {
       if (!existingIds.has(msg.id)) {
         existingIds.add(msg.id);
@@ -685,6 +731,14 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
         return;
       }
 
+      if (frame.type === 'message:revoked') {
+        if (frame.roomCode && currentRoom.value && frame.roomCode !== currentRoom.value.code) {
+          return;
+        }
+        applyMessageRevoked(frame.messageId, frame.revokedBy);
+        return;
+      }
+
       if (frame.type === 'presence:update') {
         if (frame.roomCode && currentRoom.value && frame.roomCode !== currentRoom.value.code) {
           return;
@@ -862,6 +916,26 @@ export function useChatSocket() {
     return true;
   }
 
+  function revokeMessage(messageId: string): boolean {
+    if (!/^\d+$/.test(messageId)) return false;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setTransientError('当前未连接到服务器，暂无法撤回消息');
+      return false;
+    }
+    try {
+      socket.send(
+        JSON.stringify({
+          type: 'message:revoke',
+          messageId,
+        })
+      );
+      return true;
+    } catch {
+      setTransientError('撤回请求发送失败，请重试');
+      return false;
+    }
+  }
+
   function loadOlderHistory(): Promise<number> {
     if (
       !hasMoreHistory.value ||
@@ -936,6 +1010,7 @@ export function useChatSocket() {
     onlineUsers.value = [];
     messages.value = [];
     lastIncomingMessage.value = null;
+    lastRevokedMessageId.value = null;
     status.value = 'idle';
     isLoadingHistory.value = false;
     hasMoreHistory.value = false;
@@ -960,6 +1035,7 @@ export function useChatSocket() {
     lastProfile,
     messages,
     lastIncomingMessage,
+    lastRevokedMessageId,
     onlineUsers,
     status,
     isLoadingHistory,
@@ -970,6 +1046,7 @@ export function useChatSocket() {
     joinRoom,
     sendMessage,
     retryMessage,
+    revokeMessage,
     loadOlderHistory,
     manualReconnect,
     leaveRoom,

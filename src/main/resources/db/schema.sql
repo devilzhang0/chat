@@ -25,10 +25,11 @@ CREATE TABLE IF NOT EXISTS `room` (
     UNIQUE KEY `uk_room_code` (`code`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '聊天室房间表';
 
--- 若已有新版 message 表仅需增量升级引用回复字段，可直接单独执行下面一行：
+-- 若已有新版 message 表仅需增量升级字段，可直接按需单独执行下面语句：
 -- ALTER TABLE `message` ADD COLUMN `reply_to_id` BIGINT DEFAULT NULL COMMENT '引用的消息 message.id' AFTER `room_id`;
+-- ALTER TABLE `message` ADD COLUMN `revoked` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已撤回：0否 1是' AFTER `content`;
 
--- 消息表（重建：增加 room_id 与 reply_to_id，不设默认大厅，旧测试数据会清空）
+-- 消息表（重建：增加 room_id、reply_to_id 与 revoked，不设默认大厅，旧测试数据会清空）
 DROP TABLE IF EXISTS `message`;
 CREATE TABLE `message` (
     `id`           BIGINT      NOT NULL AUTO_INCREMENT,
@@ -39,6 +40,7 @@ CREATE TABLE `message` (
     `avatar_color` VARCHAR(16) DEFAULT NULL COMMENT '头像颜色快照',
     `type`         VARCHAR(16) NOT NULL COMMENT 'text（系统消息不落库）',
     `content`      TEXT        NOT NULL,
+    `revoked`      TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '是否已撤回：0否 1是',
     `create_time`  BIGINT      NOT NULL COMMENT '发送时间戳（毫秒）',
     PRIMARY KEY (`id`),
     KEY `idx_room_id_id` (`room_id`, `id`),

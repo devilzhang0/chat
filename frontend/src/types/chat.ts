@@ -121,6 +121,7 @@ export interface ChatMessage {
   senderName: string;
   avatarColor: AvatarColorKey;
   content: string;
+  revoked?: boolean;
   timestamp: number;
   replyTo?: ReplySnapshot;
   clientTempId?: string;
@@ -150,6 +151,13 @@ export type ServerEvent =
       roomCode?: string;
       message: ChatMessage;
       clientTempId?: string;
+    }
+  | {
+      type: 'message:revoked';
+      roomCode?: string;
+      messageId: string;
+      senderId?: string;
+      revokedBy?: string;
     }
   | {
       type: 'presence:update';

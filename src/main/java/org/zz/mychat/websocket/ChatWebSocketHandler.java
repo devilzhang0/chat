@@ -17,6 +17,7 @@ import org.zz.mychat.domain.User;
 import org.zz.mychat.service.GuestService;
 import org.zz.mychat.service.MessageService;
 import org.zz.mychat.service.MessageService.HistoryPage;
+import org.zz.mychat.service.MessageService.RevokeResult;
 import org.zz.mychat.service.RateLimitService;
 import org.zz.mychat.service.RateLimitService.RateLimitResult;
 import org.zz.mychat.service.RoomService;
@@ -83,6 +84,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             case "leave" -> leave(session);
             case "join" -> join(session, node);
             case "message:send" -> handleSend(session, node);
+            case "message:revoke" -> handleRevoke(session, node);
             case "history:load" -> handleHistoryLoad(session, node);
             default -> { }
         }
@@ -261,9 +263,50 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             if (replyToId <= 0) {
                 return null;
             }
-            return messageService.findByIdInRoom(roomId, replyToId);
+            Message target = messageService.findByIdInRoom(roomId, replyToId);
+            return (target != null && !target.isRevokedMessage()) ? target : null;
         } catch (NumberFormatException e) {
             return null;
+        }
+    }
+
+    private void handleRevoke(WebSocketSession session, JsonNode node) {
+        RoomSession roomSession = onlineUserManager.getSession(session);
+        if (roomSession == null) {
+            send(session, errorPayload("NOT_JOINED", "会话未建立，请重新进入房间"));
+            return;
+        }
+        GuestUser guest = roomSession.user();
+
+        long messageId;
+        try {
+            messageId = Long.parseLong(node.path("messageId").asText("").trim());
+        } catch (NumberFormatException e) {
+            send(session, errorPayload("MESSAGE_NOT_FOUND", "消息不存在"));
+            return;
+        }
+
+        RevokeResult result = messageService.revoke(roomSession.roomId(), messageId, guest.getId());
+        switch (result.status()) {
+            case NOT_FOUND -> send(session, errorPayload("MESSAGE_NOT_FOUND", "消息不存在"));
+            case FORBIDDEN -> send(session, errorPayload("FORBIDDEN", "只能撤回自己发送的消息"));
+            case EXPIRED -> send(session, errorPayload("REVOKE_EXPIRED", "超过 2 分钟的消息无法撤回"));
+            case ALREADY_REVOKED -> send(session, messageRevokedPayload(
+                    roomSession.roomCode(),
+                    String.valueOf(messageId),
+                    guest.getId(),
+                    result.message().getNickname()
+            ));
+            case OK -> broadcastToRoom(
+                    roomSession.roomId(),
+                    messageRevokedPayload(
+                            roomSession.roomCode(),
+                            String.valueOf(messageId),
+                            guest.getId(),
+                            result.message().getNickname()
+                    ),
+                    null
+            );
         }
     }
 
@@ -351,6 +394,16 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         return payload;
     }
 
+    private Map<String, Object> messageRevokedPayload(String roomCode, String messageId, String senderId, String revokedBy) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "message:revoked");
+        payload.put("roomCode", roomCode);
+        payload.put("messageId", messageId);
+        payload.put("senderId", senderId);
+        payload.put("revokedBy", revokedBy);
+        return payload;
+    }
+
     private Map<String, Object> presencePayload(Long roomId, String roomCode) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "presence:update");
@@ -413,19 +466,26 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     private Map<String, Object> toWireMessage(Message msg, Message replyTarget) {
+        boolean revoked = msg.isRevokedMessage();
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", String.valueOf(msg.getId()));
         m.put("type", msg.getType());
         m.put("senderId", msg.getSenderId());
         m.put("senderName", msg.getNickname());
         m.put("avatarColor", msg.getAvatarColor());
-        m.put("content", msg.getContent());
+        m.put("content", revoked ? "" : msg.getContent());
+        m.put("revoked", revoked);
         m.put("timestamp", msg.getCreateTime());
-        if (replyTarget != null) {
+        if (!revoked && replyTarget != null) {
             Map<String, Object> reply = new LinkedHashMap<>();
             reply.put("id", String.valueOf(replyTarget.getId()));
             reply.put("senderName", replyTarget.getNickname());
-            reply.put("contentSnippet", MessageService.toReplySnippet(replyTarget.getContent()));
+            reply.put(
+                    "contentSnippet",
+                    replyTarget.isRevokedMessage()
+                            ? "原消息已撤回"
+                            : MessageService.toReplySnippet(replyTarget.getContent())
+            );
             m.put("replyTo", reply);
         }
         return m;

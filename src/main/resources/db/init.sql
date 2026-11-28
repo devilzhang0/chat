@@ -45,6 +45,7 @@ CREATE TABLE `message` (
     `avatar_color` VARCHAR(16) DEFAULT NULL COMMENT '头像颜色快照',
     `type`         VARCHAR(16) NOT NULL COMMENT 'text（系统消息不落库）',
     `content`      TEXT        NOT NULL,
+    `revoked`      TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '是否已撤回：0否 1是',
     `create_time`  BIGINT      NOT NULL COMMENT '发送时间戳（毫秒）',
     PRIMARY KEY (`id`),
     KEY `idx_room_id_id` (`room_id`, `id`),

@@ -30,6 +30,13 @@ public class Message {
 
     private String content;
 
+    /** 是否已撤回 */
+    private Boolean revoked;
+
     /** 发送时间戳（毫秒） */
     private Long createTime;
+
+    public boolean isRevokedMessage() {
+        return Boolean.TRUE.equals(this.revoked);
+    }
 }

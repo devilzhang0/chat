@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, nextTick, onMounted, ref, watch} from 'vue';
+import {computed, nextTick, onBeforeUnmount, onMounted, ref, watch} from 'vue';
 import {
   AlertCircle,
   ArrowDown,
@@ -15,6 +15,7 @@ import {
   MessageSquare,
   RefreshCw,
   Smile,
+  Undo2,
   Users,
   Volume2,
   VolumeX,
@@ -42,6 +43,7 @@ const {
   currentRoom,
   messages,
   lastIncomingMessage,
+  lastRevokedMessageId,
   onlineUsers,
   status,
   isLoadingHistory,
@@ -50,6 +52,7 @@ const {
   errorMessage,
   sendMessage,
   retryMessage,
+  revokeMessage,
   loadOlderHistory,
   manualReconnect,
   leaveRoom,
@@ -70,6 +73,10 @@ const highlightedMessageId = ref<string | null>(null);
 const mentionAlert = ref<{messageId: string; senderName: string} | null>(null);
 const mentionTrigger = ref<{start: number; end: number; query: string} | null>(null);
 const mentionActiveIndex = ref(0);
+
+const REVOKE_WINDOW_MS = 2 * 60 * 1000;
+const nowTick = ref(Date.now());
+let nowTickTimer: number | null = null;
 
 let copiedShareTimer: number | null = null;
 let copiedCodeTimer: number | null = null;
@@ -106,6 +113,16 @@ watch(lastIncomingMessage, (msg) => {
       mentionAlert.value = null;
       mentionAlertTimer = null;
     }, 6000);
+  }
+});
+
+watch(lastRevokedMessageId, (revokedId) => {
+  if (!revokedId) return;
+  if (replyingTo.value?.id === revokedId) {
+    replyingTo.value = null;
+  }
+  if (mentionAlert.value?.messageId === revokedId) {
+    mentionAlert.value = null;
   }
 });
 
@@ -279,7 +296,7 @@ const canSend = computed(
 );
 
 interface RenderItem {
-  kind: 'date' | 'system' | 'message';
+  kind: 'date' | 'system' | 'revoked' | 'message';
   key: string;
   dateLabel?: string;
   message?: ChatMessage;
@@ -316,6 +333,17 @@ const renderItems = computed<RenderItem[]>(() => {
     }
 
     const isSelf = Boolean(currentUser.value && msg.senderId === currentUser.value.id);
+    if (msg.revoked) {
+      items.push({
+        kind: 'revoked',
+        key: msg.clientTempId || msg.id,
+        message: msg,
+        isSelf,
+      });
+      prevTextMsg = null;
+      continue;
+    }
+
     const isCompact = Boolean(
       prevTextMsg &&
         prevTextMsg.senderId === msg.senderId &&
@@ -395,7 +423,20 @@ function resizeTextarea(): void {
 }
 
 function canReplyMessage(msg: ChatMessage): boolean {
-  return msg.type === 'text' && /^\d+$/.test(msg.id);
+  return msg.type === 'text' && !msg.revoked && /^\d+$/.test(msg.id);
+}
+
+function canRevokeMessage(msg: ChatMessage): boolean {
+  if (!currentUser.value || msg.senderId !== currentUser.value.id) return false;
+  if (msg.type !== 'text' || msg.revoked) return false;
+  if (!/^\d+$/.test(msg.id)) return false;
+  if (msg.sendStatus === 'sending' || msg.sendStatus === 'failed') return false;
+  return nowTick.value - msg.timestamp < REVOKE_WINDOW_MS;
+}
+
+function handleRevoke(msg: ChatMessage): void {
+  if (!canRevokeMessage(msg)) return;
+  revokeMessage(msg.id);
 }
 
 function startReply(msg: ChatMessage): void {
@@ -610,6 +651,9 @@ watch(
 );
 
 onMounted(() => {
+  nowTickTimer = window.setInterval(() => {
+    nowTick.value = Date.now();
+  }, 10000);
   nextTick(() => {
     scrollToBottom(false);
     isInitialScrollReady.value = true;
@@ -617,6 +661,13 @@ onMounted(() => {
       textareaRef.value?.focus();
     }
   });
+});
+
+onBeforeUnmount(() => {
+  if (nowTickTimer !== null) {
+    window.clearInterval(nowTickTimer);
+    nowTickTimer = null;
+  }
 });
 </script>
 
@@ -899,6 +950,27 @@ onMounted(() => {
                   </div>
                 </div>
 
+                <!-- Revoked message notice -->
+                <div
+                  v-else-if="item.kind === 'revoked' && item.message"
+                  :data-message-id="item.message.id"
+                  class="my-3 flex items-center justify-center text-center"
+                >
+                  <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/[0.04] dark:bg-white/[0.06] text-[12px] text-[#8E8E93]">
+                    <span>
+                      {{
+                        item.isSelf
+                          ? '你撤回了一条消息'
+                          : `${item.message.senderName} 撤回了一条消息`
+                      }}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span class="font-mono-tabular text-[11px]">
+                      {{ formatMessageTime(item.message.timestamp) }}
+                    </span>
+                  </div>
+                </div>
+
                 <!-- Regular text message -->
                 <div
                   v-else-if="item.kind === 'message' && item.message"
@@ -1032,17 +1104,31 @@ onMounted(() => {
                         <span>重发</span>
                       </button>
 
-                      <!-- Reply action button for sent self messages -->
-                      <button
+                      <!-- Reply & Revoke action buttons for sent self messages -->
+                      <div
                         v-else-if="canReplyMessage(item.message)"
-                        type="button"
-                        @click="startReply(item.message)"
-                        title="回复此消息"
-                        aria-label="回复此消息"
-                        class="h-7 w-7 rounded-full inline-flex items-center justify-center shrink-0 text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] opacity-65 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 transition-all cursor-pointer"
+                        class="flex items-center gap-0.5 shrink-0 opacity-65 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
                       >
-                        <CornerUpLeft class="w-3.5 h-3.5" />
-                      </button>
+                        <button
+                          v-if="canRevokeMessage(item.message)"
+                          type="button"
+                          @click="handleRevoke(item.message)"
+                          title="撤回消息（2 分钟内）"
+                          aria-label="撤回消息"
+                          class="h-7 w-7 rounded-full inline-flex items-center justify-center text-[#8E8E93] hover:text-[#D70015] hover:bg-[#FF3B30]/10 dark:hover:text-[#FF453A] dark:hover:bg-[#FF453A]/15 transition-colors cursor-pointer"
+                        >
+                          <Undo2 class="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          @click="startReply(item.message)"
+                          title="回复此消息"
+                          aria-label="回复此消息"
+                          class="h-7 w-7 rounded-full inline-flex items-center justify-center text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] transition-colors cursor-pointer"
+                        >
+                          <CornerUpLeft class="w-3.5 h-3.5" />
+                        </button>
+                      </div>
 
                       <div
                         class="px-4 py-2.5 rounded-[20px] rounded-br-[6px] bg-gradient-to-b from-[#1A8BFF] to-[#007AFF] dark:from-[#1A8FFF] dark:to-[#0A84FF] text-white text-[15px] leading-[1.48] whitespace-pre-wrap break-words shadow-[0_1px_2px_rgba(0,122,255,0.18)] transition-opacity duration-150"

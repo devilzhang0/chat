@@ -1,7 +1,7 @@
 package org.zz.mychat.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.zz.mychat.domain.Message;
 import org.zz.mychat.mapper.MessageMapper;
@@ -14,16 +14,39 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.LongSupplier;
 
 @Service
-@RequiredArgsConstructor
 public class MessageService {
 
+    public static final long REVOKE_WINDOW_MS = 2 * 60 * 1000L;
     private static final int REPLY_SNIPPET_MAX_LEN = 60;
 
     private final MessageMapper messageMapper;
+    private final LongSupplier clock;
+
+    @Autowired
+    public MessageService(MessageMapper messageMapper) {
+        this(messageMapper, System::currentTimeMillis);
+    }
+
+    MessageService(MessageMapper messageMapper, LongSupplier clock) {
+        this.messageMapper = messageMapper;
+        this.clock = clock;
+    }
 
     public record HistoryPage(List<Message> messages, boolean hasMore) {
+    }
+
+    public enum RevokeStatus {
+        OK,
+        NOT_FOUND,
+        FORBIDDEN,
+        EXPIRED,
+        ALREADY_REVOKED
+    }
+
+    public record RevokeResult(RevokeStatus status, Message message) {
     }
 
     public Message save(Long roomId, String senderId, String nickname, String avatarColor, String content) {
@@ -39,9 +62,45 @@ public class MessageService {
         message.setAvatarColor(avatarColor);
         message.setType("text");
         message.setContent(content);
-        message.setCreateTime(System.currentTimeMillis());
+        message.setRevoked(false);
+        message.setCreateTime(clock.getAsLong());
         messageMapper.insert(message);
         return message;
+    }
+
+    /**
+     * 撤回消息：严格校验同房间、同发送者、且在 2 分钟时间窗内。
+     */
+    public RevokeResult revoke(Long roomId, Long messageId, String senderAnonId) {
+        if (roomId == null || messageId == null || messageId <= 0 || senderAnonId == null || senderAnonId.isBlank()) {
+            return new RevokeResult(RevokeStatus.NOT_FOUND, null);
+        }
+        Message existing = findByIdInRoom(roomId, messageId);
+        if (existing == null) {
+            return new RevokeResult(RevokeStatus.NOT_FOUND, null);
+        }
+        if (!senderAnonId.equals(existing.getSenderId())) {
+            return new RevokeResult(RevokeStatus.FORBIDDEN, null);
+        }
+        if (existing.isRevokedMessage()) {
+            return new RevokeResult(RevokeStatus.ALREADY_REVOKED, existing);
+        }
+        long created = existing.getCreateTime() != null ? existing.getCreateTime() : 0L;
+        if (clock.getAsLong() - created > REVOKE_WINDOW_MS) {
+            return new RevokeResult(RevokeStatus.EXPIRED, existing);
+        }
+
+        Message update = new Message();
+        update.setRevoked(true);
+        messageMapper.update(
+                update,
+                new LambdaQueryWrapper<Message>()
+                        .eq(Message::getId, messageId)
+                        .eq(Message::getRoomId, roomId)
+                        .eq(Message::getSenderId, senderAnonId)
+        );
+        existing.setRevoked(true);
+        return new RevokeResult(RevokeStatus.OK, existing);
     }
 
     /** 校验并查询同一房间内的目标消息（严格隔离跨房间引用） */
