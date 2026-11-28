@@ -200,9 +200,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void handleSend(WebSocketSession session, JsonNode node) {
+        String clientTempId = node.hasNonNull("clientTempId") ? node.path("clientTempId").asText() : null;
         RoomSession roomSession = onlineUserManager.getSession(session);
         if (roomSession == null) {
-            send(session, errorPayload("NOT_JOINED", "会话未建立，请重新进入房间"));
+            send(session, errorPayload("NOT_JOINED", "会话未建立，请重新进入房间", clientTempId));
             return;
         }
         GuestUser guest = roomSession.user();
@@ -212,24 +213,30 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         if (content.codePointCount(0, content.length()) > MAX_MESSAGE_LEN) {
-            send(session, errorPayload("MESSAGE_TOO_LONG", "单条消息最多支持 " + MAX_MESSAGE_LEN + " 个字符"));
+            send(session, errorPayload("MESSAGE_TOO_LONG", "单条消息最多支持 " + MAX_MESSAGE_LEN + " 个字符", clientTempId));
             return;
         }
 
         RateLimitResult msgLimit = rateLimitService.checkSendMessage(guest.getId(), guest.getIp());
         if (!msgLimit.allowed()) {
-            send(session, errorPayload("RATE_LIMITED", msgLimit.message()));
+            send(session, errorPayload("RATE_LIMITED", msgLimit.message(), clientTempId));
             return;
         }
 
-        Message saved = messageService.save(
-                roomSession.roomId(),
-                guest.getId(),
-                guest.getNickname(),
-                guest.getAvatarColor(),
-                content
-        );
-        String clientTempId = node.hasNonNull("clientTempId") ? node.path("clientTempId").asText() : null;
+        Message saved;
+        try {
+            saved = messageService.save(
+                    roomSession.roomId(),
+                    guest.getId(),
+                    guest.getNickname(),
+                    guest.getAvatarColor(),
+                    content
+            );
+        } catch (Exception e) {
+            log.error("Failed to save message for room {}: {}", roomSession.roomCode(), e.getMessage(), e);
+            send(session, errorPayload("SEND_FAILED", "消息发送失败，请重试", clientTempId));
+            return;
+        }
         broadcastToRoom(
                 roomSession.roomId(),
                 messageNewPayload(roomSession.roomCode(), toWireMessage(saved), clientTempId),
@@ -346,12 +353,19 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     private Map<String, Object> errorPayload(String code, String message) {
+        return errorPayload(code, message, null);
+    }
+
+    private Map<String, Object> errorPayload(String code, String message, String clientTempId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "error");
         if (code != null) {
             payload.put("code", code);
         }
         payload.put("message", message);
+        if (clientTempId != null && !clientTempId.isBlank()) {
+            payload.put("clientTempId", clientTempId);
+        }
         return payload;
     }
 

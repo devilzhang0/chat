@@ -106,6 +106,8 @@ export interface JoinRoomPayload {
   password?: string;
 }
 
+export type MessageSendStatus = 'sending' | 'sent' | 'failed';
+
 export interface ChatMessage {
   id: string;
   type: 'text' | 'system';
@@ -114,6 +116,9 @@ export interface ChatMessage {
   avatarColor: AvatarColorKey;
   content: string;
   timestamp: number;
+  clientTempId?: string;
+  sendStatus?: MessageSendStatus;
+  failReason?: string;
 }
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
@@ -152,4 +157,5 @@ export type ServerEvent =
       type: 'error';
       code?: string;
       message: string;
+      clientTempId?: string;
     };

@@ -34,6 +34,7 @@ const {
   isLoadingMoreHistory,
   errorMessage,
   sendMessage,
+  retryMessage,
   loadOlderHistory,
   manualReconnect,
   leaveRoom,
@@ -266,7 +267,7 @@ const renderItems = computed<RenderItem[]>(() => {
 
     items.push({
       kind: 'message',
-      key: msg.id,
+      key: msg.clientTempId || msg.id,
       message: msg,
       isSelf,
       isCompact,
@@ -387,15 +388,24 @@ function insertEmoji(emoji: string): void {
   });
 }
 
+function handleRetry(msg: ChatMessage): void {
+  const key = msg.clientTempId || msg.id;
+  retryMessage(key);
+}
+
 watch(
-  () => ({
-    len: messages.value.length,
-    lastId: messages.value.length > 0 ? messages.value[messages.value.length - 1].id : null,
-  }),
+  () => {
+    const len = messages.value.length;
+    const last = len > 0 ? messages.value[len - 1] : null;
+    return {
+      len,
+      lastKey: last ? last.clientTempId || last.id : null,
+    };
+  },
   (next, prev) => {
     if (next.len === 0) return;
-    // 顶部向上分页插入历史消息时，队尾 lastId 不变，不触发滚底和未读计数
-    if (prev && prev.len > 0 && next.lastId === prev.lastId) {
+    // 顶部向上分页插入历史消息或队尾乐观消息回执替换时，队尾 key 不变，不误触滚底和未读计数
+    if (prev && prev.len > 0 && next.lastKey === prev.lastKey) {
       return;
     }
 
@@ -747,11 +757,48 @@ onMounted(() => {
                         我
                       </span>
                     </div>
-                    <div
-                      class="px-4 py-2.5 rounded-[20px] rounded-br-[6px] bg-gradient-to-b from-[#1A8BFF] to-[#007AFF] dark:from-[#1A8FFF] dark:to-[#0A84FF] text-white text-[15px] leading-[1.48] whitespace-pre-wrap break-words shadow-[0_1px_2px_rgba(0,122,255,0.18)]"
-                    >
-                      {{ item.message.content }}
+                    <div class="flex items-center justify-end gap-2 max-w-full">
+                      <!-- Sending spinner -->
+                      <span
+                        v-if="item.message.sendStatus === 'sending'"
+                        class="inline-flex items-center text-[#8E8E93] shrink-0"
+                        title="发送中..."
+                        aria-label="发送中"
+                      >
+                        <Loader2 class="w-3.5 h-3.5 animate-spin" />
+                      </span>
+
+                      <!-- Failed one-click retry button -->
+                      <button
+                        v-else-if="item.message.sendStatus === 'failed'"
+                        type="button"
+                        @click="handleRetry(item.message)"
+                        :title="item.message.failReason || '发送失败，点击重发'"
+                        aria-label="重新发送消息"
+                        class="inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[12px] font-medium shrink-0 bg-[#FF3B30]/12 text-[#D70015] hover:bg-[#FF3B30]/20 active:scale-95 dark:bg-[#FF453A]/18 dark:text-[#FF453A] dark:hover:bg-[#FF453A]/28 transition-all cursor-pointer"
+                      >
+                        <AlertCircle class="w-3.5 h-3.5 shrink-0" />
+                        <span>重发</span>
+                      </button>
+
+                      <div
+                        class="px-4 py-2.5 rounded-[20px] rounded-br-[6px] bg-gradient-to-b from-[#1A8BFF] to-[#007AFF] dark:from-[#1A8FFF] dark:to-[#0A84FF] text-white text-[15px] leading-[1.48] whitespace-pre-wrap break-words shadow-[0_1px_2px_rgba(0,122,255,0.18)] transition-opacity duration-150"
+                        :class="{
+                          'opacity-75': item.message.sendStatus === 'sending',
+                          'opacity-90 ring-1 ring-[#FF3B30]/45 dark:ring-[#FF453A]/50':
+                            item.message.sendStatus === 'failed',
+                        }"
+                      >
+                        {{ item.message.content }}
+                      </div>
                     </div>
+
+                    <span
+                      v-if="item.message.sendStatus === 'failed' && item.message.failReason"
+                      class="mt-1 pr-1 text-[11px] text-[#FF3B30] dark:text-[#FF453A]"
+                    >
+                      {{ item.message.failReason }}
+                    </span>
                   </div>
                 </div>
               </template>

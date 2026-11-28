@@ -261,6 +261,7 @@ const errorCode = ref<string | null>(null);
 
 const HEARTBEAT_INTERVAL_MS = 25000;
 const PONG_TIMEOUT_MS = 10000;
+const SEND_ACK_TIMEOUT_MS = 8000;
 const HISTORY_PAGE_SIZE = 50;
 
 let socket: WebSocket | null = null;
@@ -271,6 +272,7 @@ let heartbeatTimer: number | null = null;
 let pongTimeoutTimer: number | null = null;
 let historyLoadTimeoutTimer: number | null = null;
 let pendingHistoryResolve: ((addedCount: number) => void) | null = null;
+const pendingSendTimers = new Map<string, number>();
 let pendingJoin: JoinRoomPayload | null = null;
 let errorClearTimer: number | null = null;
 let lifecycleListenersBound = false;
@@ -404,11 +406,80 @@ function closeSocketSilently(): void {
   socket = null;
 }
 
-function upsertMessageIdempotent(incoming: ChatMessage): void {
+function clearPendingSendTimer(clientTempId: string): void {
+  const timer = pendingSendTimers.get(clientTempId);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    pendingSendTimers.delete(clientTempId);
+  }
+}
+
+function clearAllPendingSendTimers(): void {
+  for (const timer of pendingSendTimers.values()) {
+    window.clearTimeout(timer);
+  }
+  pendingSendTimers.clear();
+}
+
+function markMessageFailed(clientTempId: string, reason: string): void {
+  clearPendingSendTimer(clientTempId);
+  const idx = messages.value.findIndex(
+    (m) => m.clientTempId === clientTempId || m.id === `temp-${clientTempId}`
+  );
+  if (idx !== -1 && messages.value[idx].sendStatus === 'sending') {
+    messages.value[idx] = {
+      ...messages.value[idx],
+      sendStatus: 'failed',
+      failReason: reason,
+    };
+  }
+}
+
+function markAllSendingAsFailed(reason: string): void {
+  clearAllPendingSendTimers();
+  let changed = false;
+  const next = messages.value.map((m) => {
+    if (m.sendStatus === 'sending') {
+      changed = true;
+      return {...m, sendStatus: 'failed' as const, failReason: reason};
+    }
+    return m;
+  });
+  if (changed) {
+    messages.value = next;
+  }
+}
+
+function upsertMessageIdempotent(incoming: ChatMessage, clientTempId?: string): void {
+  if (clientTempId) {
+    clearPendingSendTimer(clientTempId);
+    const optimisticIdx = messages.value.findIndex(
+      (m) => m.clientTempId === clientTempId || m.id === `temp-${clientTempId}`
+    );
+    if (optimisticIdx !== -1) {
+      const confirmed: ChatMessage = {
+        ...incoming,
+        clientTempId,
+        sendStatus: 'sent',
+        failReason: undefined,
+      };
+      // 防御性去重：若正式 ID 已存在于其他位置，移除临时占位即可
+      const duplicateIdx = messages.value.findIndex(
+        (m, i) => i !== optimisticIdx && m.id === incoming.id
+      );
+      if (duplicateIdx !== -1) {
+        messages.value.splice(optimisticIdx, 1);
+      } else {
+        messages.value.splice(optimisticIdx, 1, confirmed);
+      }
+      return;
+    }
+  }
+
   if (messages.value.some((m) => m.id === incoming.id)) {
     return;
   }
-  messages.value.push(incoming);
+  messages.value.push({...incoming, sendStatus: 'sent'});
 }
 
 function mergeHistoryIdempotent(
@@ -416,6 +487,9 @@ function mergeHistoryIdempotent(
   isSameRoomReconnect: boolean,
   serverHasMore: boolean
 ): void {
+  const localFailed = isSameRoomReconnect
+    ? messages.value.filter((m) => m.sendStatus === 'failed')
+    : [];
   const serverIds = new Set(serverMessages.map((m) => m.id));
   const hasOverlap =
     isSameRoomReconnect &&
@@ -428,7 +502,7 @@ function mergeHistoryIdempotent(
     for (const msg of serverMessages) {
       if (!existingIds.has(msg.id)) {
         existingIds.add(msg.id);
-        messages.value.push(msg);
+        messages.value.push({...msg, sendStatus: 'sent'});
       }
     }
     return;
@@ -439,7 +513,13 @@ function mergeHistoryIdempotent(
   for (const msg of serverMessages) {
     if (!seen.has(msg.id)) {
       seen.add(msg.id);
-      deduped.push(msg);
+      deduped.push({...msg, sendStatus: 'sent'});
+    }
+  }
+  // 保留同一房间重连前尚未重发成功的本地失败消息
+  for (const failed of localFailed) {
+    if (!seen.has(failed.id)) {
+      deduped.push(failed);
     }
   }
   messages.value = deduped;
@@ -595,7 +675,7 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
         if (frame.roomCode && currentRoom.value && frame.roomCode !== currentRoom.value.code) {
           return;
         }
-        upsertMessageIdempotent(frame.message);
+        upsertMessageIdempotent(frame.message, frame.clientTempId);
         return;
       }
 
@@ -610,6 +690,9 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
       if (frame.type === 'error') {
         window.clearTimeout(connectTimeout);
         finishPendingHistoryLoad(0);
+        if (frame.clientTempId) {
+          markMessageFailed(frame.clientTempId, frame.message);
+        }
         setTransientError(frame.message, frame.code ?? null);
         const stopReconnectCodes = new Set([
           'ROOM_NOT_FOUND',
@@ -650,6 +733,7 @@ function openSocket(payload: JoinRoomPayload, isInitialJoin: boolean): Promise<J
       }
       clearPongTimeout();
       finishPendingHistoryLoad(0);
+      markAllSendingAsFailed('连接已断开，请重试');
       if (!settled) {
         isLoadingHistory.value = false;
         finish({ok: false, message: '连接已关闭'});
@@ -687,25 +771,83 @@ export function useChatSocket() {
     return result;
   }
 
+  function dispatchMessageFrame(content: string, clientTempId: string): void {
+    clearPendingSendTimer(clientTempId);
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      markMessageFailed(clientTempId, '当前未连接到服务器');
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      markMessageFailed(clientTempId, '发送超时，请重试');
+    }, SEND_ACK_TIMEOUT_MS);
+    pendingSendTimers.set(clientTempId, timer);
+
+    try {
+      socket.send(
+        JSON.stringify({
+          type: 'message:send',
+          content,
+          clientTempId,
+        })
+      );
+    } catch {
+      markMessageFailed(clientTempId, '发送失败，请重试');
+    }
+  }
+
   function sendMessage(content: string): boolean {
     const trimmed = content.trim();
     if (!trimmed) return false;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      setTransientError('当前未连接到服务器，正在尝试重新连接');
+    if (!currentUser.value) {
+      setTransientError('会话未建立，请重新进入房间');
       return false;
     }
+
     const clientTempId =
       typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
-    socket.send(
-      JSON.stringify({
-        type: 'message:send',
-        content: trimmed,
-        clientTempId,
-      })
+    // 乐观更新：立即以 sending 状态渲染临时气泡
+    const optimistic: ChatMessage = {
+      id: `temp-${clientTempId}`,
+      clientTempId,
+      type: 'text',
+      senderId: currentUser.value.id,
+      senderName: currentUser.value.nickname,
+      avatarColor: currentUser.value.avatarColor,
+      content: trimmed,
+      timestamp: Date.now(),
+      sendStatus: 'sending',
+    };
+    messages.value.push(optimistic);
+    dispatchMessageFrame(trimmed, clientTempId);
+    return true;
+  }
+
+  function retryMessage(clientTempId: string): boolean {
+    const idx = messages.value.findIndex(
+      (m) => m.clientTempId === clientTempId || m.id === `temp-${clientTempId}`
     );
+    if (idx === -1) return false;
+    const target = messages.value[idx];
+    if (target.sendStatus !== 'failed') return false;
+
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setTransientError('当前未连接到服务器，请等待恢复连接后重试');
+      return false;
+    }
+
+    const tempId = target.clientTempId || clientTempId;
+    messages.value[idx] = {
+      ...target,
+      clientTempId: tempId,
+      timestamp: Date.now(),
+      sendStatus: 'sending',
+      failReason: undefined,
+    };
+    dispatchMessageFrame(target.content, tempId);
     return true;
   }
 
@@ -765,6 +907,7 @@ export function useChatSocket() {
     shouldAutoReconnect = false;
     pendingJoin = null;
     clearTimers();
+    clearAllPendingSendTimers();
 
     if (socket) {
       if (socket.readyState === WebSocket.OPEN) {
@@ -813,6 +956,7 @@ export function useChatSocket() {
     errorCode,
     joinRoom,
     sendMessage,
+    retryMessage,
     loadOlderHistory,
     manualReconnect,
     leaveRoom,
