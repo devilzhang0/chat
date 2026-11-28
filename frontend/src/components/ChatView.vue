@@ -4,8 +4,10 @@ import {
   AlertCircle,
   ArrowDown,
   ArrowUp,
+  AtSign,
   Check,
   Copy,
+  CornerUpLeft,
   Link2,
   Loader2,
   Lock,
@@ -16,6 +18,7 @@ import {
   Users,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-vue-next';
 import EmojiPicker from '@/components/EmojiPicker.vue';
 import MessageContent from '@/components/MessageContent.vue';
@@ -24,8 +27,15 @@ import ThemeToggle from '@/components/ThemeToggle.vue';
 import {useChatSocket} from '@/composables/useChatSocket';
 import {useMobileViewport} from '@/composables/useMobileViewport';
 import {useNotification} from '@/composables/useNotification';
-import {getAvatarBgClass, getAvatarInitials, type ChatMessage} from '@/types/chat';
+import {
+  getAvatarBgClass,
+  getAvatarInitials,
+  type ChatMessage,
+  type OnlineUser,
+  type ReplySnapshot,
+} from '@/types/chat';
 import {formatDateDivider, formatDateKey, formatMessageTime} from '@/utils/formatTime';
+import {isMentioningUser, makeReplySnippet} from '@/utils/parseMessage';
 
 const {
   currentUser,
@@ -55,11 +65,31 @@ const unreadBelowCount = ref(0);
 const isInitialScrollReady = ref(false);
 const copiedShare = ref(false);
 const copiedCode = ref(false);
+const replyingTo = ref<ReplySnapshot | null>(null);
+const highlightedMessageId = ref<string | null>(null);
+const mentionAlert = ref<{messageId: string; senderName: string} | null>(null);
+const mentionTrigger = ref<{start: number; end: number; query: string} | null>(null);
+const mentionActiveIndex = ref(0);
+
 let copiedShareTimer: number | null = null;
 let copiedCodeTimer: number | null = null;
+let highlightTimer: number | null = null;
+let mentionAlertTimer: number | null = null;
 
 const scrollContainerRef = ref<HTMLElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
+
+const selfNickname = computed(() => currentUser.value?.nickname ?? null);
+const knownMemberNames = computed(() => onlineUsers.value.map((u) => u.nickname));
+
+const mentionCandidates = computed<OnlineUser[]>(() => {
+  if (!mentionTrigger.value) return [];
+  const q = mentionTrigger.value.query.toLowerCase();
+  const selfId = currentUser.value?.id;
+  return onlineUsers.value.filter(
+    (u) => u.id !== selfId && (!q || u.nickname.toLowerCase().includes(q))
+  );
+});
 
 const roomNameRef = computed(() => currentRoom.value?.name);
 const {soundEnabled, toggleSound, notifyIncomingMessage} = useNotification(roomNameRef);
@@ -67,7 +97,16 @@ const {soundEnabled, toggleSound, notifyIncomingMessage} = useNotification(roomN
 watch(lastIncomingMessage, (msg) => {
   if (!msg || msg.type !== 'text') return;
   if (currentUser.value && msg.senderId === currentUser.value.id) return;
-  notifyIncomingMessage();
+  const mentioned = isMentioningUser(msg.content, selfNickname.value, knownMemberNames.value);
+  notifyIncomingMessage({mentioned});
+  if (mentioned) {
+    mentionAlert.value = {messageId: msg.id, senderName: msg.senderName};
+    if (mentionAlertTimer !== null) window.clearTimeout(mentionAlertTimer);
+    mentionAlertTimer = window.setTimeout(() => {
+      mentionAlert.value = null;
+      mentionAlertTimer = null;
+    }, 6000);
+  }
 });
 
 const {viewportHeight, viewportOffsetTop, isKeyboardOpen, syncViewport} = useMobileViewport(() => {
@@ -134,6 +173,9 @@ function dismissInputOverlay(target: EventTarget | null): void {
   }
   if (showEmojiPicker.value) {
     showEmojiPicker.value = false;
+  }
+  if (mentionTrigger.value) {
+    mentionTrigger.value = null;
   }
 }
 
@@ -243,6 +285,7 @@ interface RenderItem {
   message?: ChatMessage;
   isSelf?: boolean;
   isCompact?: boolean;
+  isMentionedSelf?: boolean;
 }
 
 const renderItems = computed<RenderItem[]>(() => {
@@ -278,6 +321,8 @@ const renderItems = computed<RenderItem[]>(() => {
         prevTextMsg.senderId === msg.senderId &&
         msg.timestamp - prevTextMsg.timestamp < 3 * 60 * 1000
     );
+    const isMentionedSelf =
+      !isSelf && isMentioningUser(msg.content, selfNickname.value, knownMemberNames.value);
 
     items.push({
       kind: 'message',
@@ -285,6 +330,7 @@ const renderItems = computed<RenderItem[]>(() => {
       message: msg,
       isSelf,
       isCompact,
+      isMentionedSelf,
     });
     prevTextMsg = msg;
   }
@@ -348,12 +394,102 @@ function resizeTextarea(): void {
   el.style.height = `${nextHeight}px`;
 }
 
+function canReplyMessage(msg: ChatMessage): boolean {
+  return msg.type === 'text' && /^\d+$/.test(msg.id);
+}
+
+function startReply(msg: ChatMessage): void {
+  if (!canReplyMessage(msg)) return;
+  replyingTo.value = {
+    id: msg.id,
+    senderName: msg.senderName,
+    contentSnippet: makeReplySnippet(msg.content),
+  };
+  showEmojiPicker.value = false;
+  nextTick(() => {
+    textareaRef.value?.focus();
+  });
+}
+
+function cancelReply(): void {
+  replyingTo.value = null;
+}
+
+function jumpToMessage(messageId: string): void {
+  const container = scrollContainerRef.value;
+  if (!container) return;
+  const targetEl = container.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`);
+  if (!targetEl) return;
+  targetEl.scrollIntoView({behavior: 'smooth', block: 'center'});
+  highlightedMessageId.value = messageId;
+  if (highlightTimer !== null) window.clearTimeout(highlightTimer);
+  highlightTimer = window.setTimeout(() => {
+    highlightedMessageId.value = null;
+    highlightTimer = null;
+  }, 1600);
+}
+
+function handleJumpToMention(): void {
+  if (!mentionAlert.value) return;
+  const id = mentionAlert.value.messageId;
+  mentionAlert.value = null;
+  if (mentionAlertTimer !== null) {
+    window.clearTimeout(mentionAlertTimer);
+    mentionAlertTimer = null;
+  }
+  jumpToMessage(id);
+}
+
+function updateMentionTrigger(): void {
+  const el = textareaRef.value;
+  const caret = el?.selectionStart ?? draft.value.length;
+  const beforeCaret = draft.value.slice(0, caret);
+  const match = /(?:^|[\s,，。！？；：、()[\]【】])@([^\s@]*)$/.exec(beforeCaret);
+  if (!match) {
+    mentionTrigger.value = null;
+    return;
+  }
+  const query = match[1];
+  const atStart = caret - query.length - 1;
+  mentionTrigger.value = {start: atStart, end: caret, query};
+  mentionActiveIndex.value = 0;
+  if (showEmojiPicker.value) {
+    showEmojiPicker.value = false;
+  }
+}
+
+function selectMentionUser(user: OnlineUser): void {
+  if (!mentionTrigger.value) return;
+  const {start, end} = mentionTrigger.value;
+  const insertText = `@${user.nickname} `;
+  draft.value = draft.value.slice(0, start) + insertText + draft.value.slice(end);
+  mentionTrigger.value = null;
+  mentionActiveIndex.value = 0;
+
+  nextTick(() => {
+    const el = textareaRef.value;
+    if (el) {
+      const nextPos = start + insertText.length;
+      el.focus();
+      el.setSelectionRange(nextPos, nextPos);
+    }
+    resizeTextarea();
+  });
+}
+
+function handleTextareaInput(): void {
+  resizeTextarea();
+  updateMentionTrigger();
+}
+
 function handleSend(): void {
   if (!canSend.value) return;
   const wasFocused = document.activeElement === textareaRef.value;
-  const sent = sendMessage(draft.value);
+  const sent = sendMessage(draft.value, replyingTo.value);
   if (sent) {
     draft.value = '';
+    replyingTo.value = null;
+    mentionTrigger.value = null;
     showEmojiPicker.value = false;
     nextTick(() => {
       resizeTextarea();
@@ -377,6 +513,40 @@ function handleStarterSend(text: string): void {
 }
 
 function handleKeydown(e: KeyboardEvent): void {
+  if (mentionTrigger.value && mentionCandidates.value.length > 0) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      mentionActiveIndex.value = (mentionActiveIndex.value + 1) % mentionCandidates.value.length;
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      mentionActiveIndex.value =
+        (mentionActiveIndex.value - 1 + mentionCandidates.value.length) %
+        mentionCandidates.value.length;
+      return;
+    }
+    if ((e.key === 'Enter' || e.key === 'Tab') && !isComposing.value) {
+      e.preventDefault();
+      const selected = mentionCandidates.value[mentionActiveIndex.value] ?? mentionCandidates.value[0];
+      if (selected) {
+        selectMentionUser(selected);
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      mentionTrigger.value = null;
+      return;
+    }
+  }
+
+  if (e.key === 'Escape' && replyingTo.value) {
+    e.preventDefault();
+    cancelReply();
+    return;
+  }
+
   if (e.key === 'Enter' && !e.shiftKey && !isComposing.value) {
     e.preventDefault();
     handleSend();
@@ -732,16 +902,20 @@ onMounted(() => {
                 <!-- Regular text message -->
                 <div
                   v-else-if="item.kind === 'message' && item.message"
-                  class="flex"
+                  :data-message-id="item.message.id"
+                  class="group flex rounded-[18px] transition-colors duration-300"
                   :class="[
                     item.isSelf ? 'justify-end' : 'justify-start',
                     item.isCompact ? 'mt-1' : 'mt-4',
+                    highlightedMessageId === item.message.id
+                      ? 'bg-[#007AFF]/[0.08] dark:bg-[#0A84FF]/[0.14] px-2 py-1 -mx-2'
+                      : '',
                   ]"
                 >
                   <!-- Other user message (iMessage Incoming) -->
                   <div
                     v-if="!item.isSelf"
-                    class="flex items-end gap-2.5 max-w-[82%] sm:max-w-[70%]"
+                    class="flex items-end gap-2.5 max-w-[88%] sm:max-w-[74%]"
                   >
                     <div class="w-8 shrink-0">
                       <div
@@ -756,7 +930,7 @@ onMounted(() => {
                     <div class="min-w-0">
                       <div
                         v-if="!item.isCompact"
-                        class="flex items-baseline gap-2 mb-1.5 pl-1"
+                        class="flex items-center gap-2 mb-1.5 pl-1"
                       >
                         <span class="text-[12px] font-medium text-[#636366] dark:text-[#98989F] truncate max-w-[180px]">
                           {{ item.message.senderName }}
@@ -764,11 +938,56 @@ onMounted(() => {
                         <span class="text-[11px] font-mono-tabular text-[#8E8E93] shrink-0">
                           {{ formatMessageTime(item.message.timestamp) }}
                         </span>
+                        <span
+                          v-if="item.isMentionedSelf"
+                          class="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-[#FF9500]/15 text-[#B25000] dark:bg-[#FF9F0A]/22 dark:text-[#FFB340] shrink-0"
+                        >
+                          @提到了你
+                        </span>
                       </div>
-                      <div
-                        class="px-4 py-2.5 rounded-[20px] rounded-bl-[6px] bg-[#E9E9EB] text-[#1C1C1E] dark:bg-[#262629] dark:text-[#F5F5F7] text-[15px] leading-[1.48] whitespace-pre-wrap break-words"
-                      >
-                        <MessageContent :content="item.message.content" :is-self="false" />
+                      <div class="flex items-end gap-1.5">
+                        <div
+                          class="px-4 py-2.5 rounded-[20px] rounded-bl-[6px] text-[15px] leading-[1.48] whitespace-pre-wrap break-words"
+                          :class="
+                            item.isMentionedSelf
+                              ? 'bg-[#FFF7EB] text-[#1C1C1E] ring-1 ring-[#FF9500]/40 dark:bg-[#2B2216] dark:text-[#F5F5F7] dark:ring-[#FF9F0A]/45'
+                              : 'bg-[#E9E9EB] text-[#1C1C1E] dark:bg-[#262629] dark:text-[#F5F5F7]'
+                          "
+                        >
+                          <!-- Quoted reply block -->
+                          <button
+                            v-if="item.message.replyTo"
+                            type="button"
+                            @click="jumpToMessage(item.message.replyTo.id)"
+                            class="mb-2 w-full text-left px-2.5 py-1.5 rounded-[10px] bg-black/[0.05] hover:bg-black/[0.08] dark:bg-white/[0.08] dark:hover:bg-white/[0.12] border-l-2 border-[#007AFF] dark:border-[#0A84FF] transition-colors cursor-pointer"
+                          >
+                            <div class="text-[11px] font-medium text-[#0066D6] dark:text-[#409CFF] truncate">
+                              {{ item.message.replyTo.senderName }}
+                            </div>
+                            <div class="text-[12px] text-[#636366] dark:text-[#98989F] truncate">
+                              {{ item.message.replyTo.contentSnippet }}
+                            </div>
+                          </button>
+
+                          <MessageContent
+                            :content="item.message.content"
+                            :is-self="false"
+                            :self-nickname="selfNickname"
+                            :known-names="knownMemberNames"
+                          />
+                        </div>
+
+                        <!-- Reply action button -->
+                        <button
+                          v-if="canReplyMessage(item.message)"
+                          type="button"
+                          @click="startReply(item.message)"
+                          title="回复此消息"
+                          aria-label="回复此消息"
+                          class="h-7 w-7 rounded-full inline-flex items-center justify-center shrink-0 text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] opacity-65 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 transition-all cursor-pointer"
+                        >
+                          <CornerUpLeft class="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -776,7 +995,7 @@ onMounted(() => {
                   <!-- Self message (iMessage Outgoing) -->
                   <div
                     v-else
-                    class="flex flex-col items-end max-w-[82%] sm:max-w-[70%]"
+                    class="flex flex-col items-end max-w-[88%] sm:max-w-[74%]"
                   >
                     <div
                       v-if="!item.isCompact"
@@ -789,11 +1008,11 @@ onMounted(() => {
                         我
                       </span>
                     </div>
-                    <div class="flex items-center justify-end gap-2 max-w-full">
+                    <div class="flex items-end justify-end gap-1.5 max-w-full">
                       <!-- Sending spinner -->
                       <span
                         v-if="item.message.sendStatus === 'sending'"
-                        class="inline-flex items-center text-[#8E8E93] shrink-0"
+                        class="inline-flex items-center self-center text-[#8E8E93] shrink-0"
                         title="发送中..."
                         aria-label="发送中"
                       >
@@ -807,10 +1026,22 @@ onMounted(() => {
                         @click="handleRetry(item.message)"
                         :title="item.message.failReason || '发送失败，点击重发'"
                         aria-label="重新发送消息"
-                        class="inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[12px] font-medium shrink-0 bg-[#FF3B30]/12 text-[#D70015] hover:bg-[#FF3B30]/20 active:scale-95 dark:bg-[#FF453A]/18 dark:text-[#FF453A] dark:hover:bg-[#FF453A]/28 transition-all cursor-pointer"
+                        class="inline-flex items-center self-center gap-1 h-7 px-2.5 rounded-full text-[12px] font-medium shrink-0 bg-[#FF3B30]/12 text-[#D70015] hover:bg-[#FF3B30]/20 active:scale-95 dark:bg-[#FF453A]/18 dark:text-[#FF453A] dark:hover:bg-[#FF453A]/28 transition-all cursor-pointer"
                       >
                         <AlertCircle class="w-3.5 h-3.5 shrink-0" />
                         <span>重发</span>
+                      </button>
+
+                      <!-- Reply action button for sent self messages -->
+                      <button
+                        v-else-if="canReplyMessage(item.message)"
+                        type="button"
+                        @click="startReply(item.message)"
+                        title="回复此消息"
+                        aria-label="回复此消息"
+                        class="h-7 w-7 rounded-full inline-flex items-center justify-center shrink-0 text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] opacity-65 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 transition-all cursor-pointer"
+                      >
+                        <CornerUpLeft class="w-3.5 h-3.5" />
                       </button>
 
                       <div
@@ -821,7 +1052,27 @@ onMounted(() => {
                             item.message.sendStatus === 'failed',
                         }"
                       >
-                        <MessageContent :content="item.message.content" :is-self="true" />
+                        <!-- Quoted reply block -->
+                        <button
+                          v-if="item.message.replyTo"
+                          type="button"
+                          @click="jumpToMessage(item.message.replyTo.id)"
+                          class="mb-2 w-full text-left px-2.5 py-1.5 rounded-[10px] bg-white/15 hover:bg-white/22 border-l-2 border-white/80 transition-colors cursor-pointer"
+                        >
+                          <div class="text-[11px] font-medium text-white/95 truncate">
+                            {{ item.message.replyTo.senderName }}
+                          </div>
+                          <div class="text-[12px] text-white/80 truncate">
+                            {{ item.message.replyTo.contentSnippet }}
+                          </div>
+                        </button>
+
+                        <MessageContent
+                          :content="item.message.content"
+                          :is-self="true"
+                          :self-nickname="selfNickname"
+                          :known-names="knownMemberNames"
+                        />
                       </div>
                     </div>
 
@@ -838,21 +1089,35 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- Floating Frosted Scroll to Bottom Button -->
-        <Transition name="popover">
-          <button
-            v-if="!isAtBottom"
-            type="button"
-            @click="scrollToBottom(true)"
-            class="absolute bottom-3 right-4 sm:right-8 z-10 inline-flex items-center gap-1.5 h-9 px-4 rounded-full ios-glass-popover text-[#1C1C1E] dark:text-[#F5F5F7] ring-1 ring-black/[0.08] dark:ring-white/[0.12] shadow-[0_8px_24px_rgba(0,0,0,0.12)] dark:shadow-[0_10px_28px_rgba(0,0,0,0.55)] hover:scale-[1.02] active:scale-[0.97] text-[13px] font-medium transition-all cursor-pointer"
-          >
-            <ArrowDown class="w-3.5 h-3.5 text-[#007AFF] dark:text-[#0A84FF]" />
-            <span v-if="unreadBelowCount > 0" class="font-mono-tabular">
-              {{ unreadBelowCount }} 条新消息
-            </span>
-            <span v-else>回到底部</span>
-          </button>
-        </Transition>
+        <!-- Floating Mention Alert & Scroll to Bottom Buttons -->
+        <div class="absolute bottom-3 right-4 sm:right-8 z-10 flex flex-col items-end gap-2">
+          <Transition name="popover">
+            <button
+              v-if="mentionAlert"
+              type="button"
+              @click="handleJumpToMention"
+              class="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-full bg-[#FF9500] hover:bg-[#E08600] dark:bg-[#FF9F0A] dark:hover:bg-[#FFB340] text-white shadow-[0_8px_24px_rgba(255,149,0,0.32)] active:scale-[0.97] text-[13px] font-medium transition-all cursor-pointer"
+            >
+              <AtSign class="w-3.5 h-3.5 shrink-0" />
+              <span class="truncate max-w-[180px]">{{ mentionAlert.senderName }} 提到了你</span>
+            </button>
+          </Transition>
+
+          <Transition name="popover">
+            <button
+              v-if="!isAtBottom"
+              type="button"
+              @click="scrollToBottom(true)"
+              class="inline-flex items-center gap-1.5 h-9 px-4 rounded-full ios-glass-popover text-[#1C1C1E] dark:text-[#F5F5F7] ring-1 ring-black/[0.08] dark:ring-white/[0.12] shadow-[0_8px_24px_rgba(0,0,0,0.12)] dark:shadow-[0_10px_28px_rgba(0,0,0,0.55)] hover:scale-[1.02] active:scale-[0.97] text-[13px] font-medium transition-all cursor-pointer"
+            >
+              <ArrowDown class="w-3.5 h-3.5 text-[#007AFF] dark:text-[#0A84FF]" />
+              <span v-if="unreadBelowCount > 0" class="font-mono-tabular">
+                {{ unreadBelowCount }} 条新消息
+              </span>
+              <span v-else>回到底部</span>
+            </button>
+          </Transition>
+        </div>
         </div>
 
         <!-- Frosted iOS Bottom Composer -->
@@ -865,6 +1130,50 @@ onMounted(() => {
           "
         >
           <div class="max-w-3xl mx-auto w-full relative">
+            <!-- @Mention Autocomplete Popover -->
+            <Transition name="popover">
+              <div
+                v-if="mentionTrigger && mentionCandidates.length > 0"
+                role="listbox"
+                aria-label="提及在线成员"
+                class="absolute bottom-full left-0 right-0 sm:right-auto sm:w-[280px] mb-2 z-30 rounded-[18px] ios-glass-popover ring-1 ring-black/[0.08] dark:ring-white/[0.12] shadow-[0_16px_40px_-10px_rgba(0,0,0,0.18)] dark:shadow-[0_20px_50px_-10px_rgba(0,0,0,0.65)] overflow-hidden p-1.5"
+              >
+                <div class="px-2.5 py-1 text-[11px] font-medium text-[#8E8E93] flex items-center justify-between">
+                  <span>选择要 @ 的在线成员</span>
+                  <span class="hidden sm:inline">↑↓ / Enter</span>
+                </div>
+                <div class="max-h-[216px] overflow-y-auto chat-scroll space-y-0.5">
+                  <button
+                    v-for="(member, idx) in mentionCandidates"
+                    :key="member.id"
+                    type="button"
+                    role="option"
+                    :aria-selected="idx === mentionActiveIndex"
+                    @mousedown.prevent
+                    @click="selectMentionUser(member)"
+                    @mouseenter="mentionActiveIndex = idx"
+                    class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[12px] text-left transition-colors cursor-pointer"
+                    :class="
+                      idx === mentionActiveIndex
+                        ? 'bg-[#007AFF]/12 text-[#0066D6] dark:bg-[#0A84FF]/22 dark:text-[#F5F5F7]'
+                        : 'text-[#1C1C1E] hover:bg-black/[0.05] dark:text-[#F5F5F7] dark:hover:bg-white/[0.08]'
+                    "
+                  >
+                    <span
+                      class="h-7 w-7 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0 select-none"
+                      :class="getAvatarBgClass(member.avatarColor)"
+                    >
+                      {{ getAvatarInitials(member.nickname) }}
+                    </span>
+                    <span class="text-[14px] font-medium truncate flex-1">
+                      {{ member.nickname }}
+                    </span>
+                    <AtSign class="w-3.5 h-3.5 opacity-55 shrink-0" />
+                  </button>
+                </div>
+              </div>
+            </Transition>
+
             <!-- Emoji Popover -->
             <Transition name="popover">
               <div
@@ -875,6 +1184,33 @@ onMounted(() => {
                   @select="insertEmoji"
                   @close="showEmojiPicker = false"
                 />
+              </div>
+            </Transition>
+
+            <!-- Pending Reply Preview Bar -->
+            <Transition name="popover">
+              <div
+                v-if="replyingTo"
+                class="mb-2 px-3 py-2 rounded-[14px] bg-[#F2F2F7] dark:bg-[#1C1C1E] ring-1 ring-black/[0.06] dark:ring-white/[0.09] flex items-center gap-2.5"
+              >
+                <CornerUpLeft class="w-4 h-4 text-[#007AFF] dark:text-[#0A84FF] shrink-0" />
+                <div class="min-w-0 flex-1 border-l-2 border-[#007AFF] dark:border-[#0A84FF] pl-2.5">
+                  <div class="text-[12px] font-medium text-[#0066D6] dark:text-[#409CFF] truncate">
+                    回复 {{ replyingTo.senderName }}
+                  </div>
+                  <div class="text-[12px] text-[#636366] dark:text-[#98989F] truncate">
+                    {{ replyingTo.contentSnippet }}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  @click="cancelReply"
+                  aria-label="取消回复"
+                  title="取消回复 (Esc)"
+                  class="h-7 w-7 rounded-full inline-flex items-center justify-center text-[#8E8E93] hover:text-[#1C1C1E] hover:bg-black/[0.06] dark:hover:text-[#F5F5F7] dark:hover:bg-white/[0.1] shrink-0 transition-colors cursor-pointer"
+                >
+                  <X class="w-3.5 h-3.5" />
+                </button>
               </div>
             </Transition>
 
@@ -907,7 +1243,9 @@ onMounted(() => {
                   rows="1"
                   enterkeyhint="send"
                   @focus="handleTextareaFocus"
-                  @input="resizeTextarea"
+                  @input="handleTextareaInput"
+                  @click="updateMentionTrigger"
+                  @keyup="updateMentionTrigger"
                   @keydown="handleKeydown"
                   @compositionstart="isComposing = true"
                   @compositionend="isComposing = false"

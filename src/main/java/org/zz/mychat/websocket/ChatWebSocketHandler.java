@@ -223,6 +223,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
+        Message replyTarget = resolveReplyTarget(roomSession.roomId(), node);
+        Long validReplyToId = replyTarget != null ? replyTarget.getId() : null;
+
         Message saved;
         try {
             saved = messageService.save(
@@ -230,7 +233,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                     guest.getId(),
                     guest.getNickname(),
                     guest.getAvatarColor(),
-                    content
+                    content,
+                    validReplyToId
             );
         } catch (Exception e) {
             log.error("Failed to save message for room {}: {}", roomSession.roomCode(), e.getMessage(), e);
@@ -239,9 +243,28 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         }
         broadcastToRoom(
                 roomSession.roomId(),
-                messageNewPayload(roomSession.roomCode(), toWireMessage(saved), clientTempId),
+                messageNewPayload(roomSession.roomCode(), toWireMessage(saved, replyTarget), clientTempId),
                 null
         );
+    }
+
+    private Message resolveReplyTarget(Long roomId, JsonNode node) {
+        if (!node.hasNonNull("replyToId")) {
+            return null;
+        }
+        String raw = node.path("replyToId").asText("").trim();
+        if (raw.isEmpty()) {
+            return null;
+        }
+        try {
+            long replyToId = Long.parseLong(raw);
+            if (replyToId <= 0) {
+                return null;
+            }
+            return messageService.findByIdInRoom(roomId, replyToId);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private void handleHistoryLoad(WebSocketSession session, JsonNode node) {
@@ -260,12 +283,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         try {
             beforeId = Long.parseLong(node.path("beforeId").asText("").trim());
         } catch (NumberFormatException e) {
-            send(session, historyPagePayload(roomSession.roomCode(), new HistoryPage(List.of(), false)));
+            send(session, historyPagePayload(roomSession.roomId(), roomSession.roomCode(), new HistoryPage(List.of(), false)));
             return;
         }
         int reqLimit = node.path("limit").asInt(HISTORY_PAGE_LIMIT);
         HistoryPage page = messageService.beforePage(roomSession.roomId(), beforeId, reqLimit);
-        send(session, historyPagePayload(roomSession.roomCode(), page));
+        send(session, historyPagePayload(roomSession.roomId(), roomSession.roomCode(), page));
     }
 
     private void leave(WebSocketSession session) {
@@ -299,10 +322,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         payload.put("type", "sync:init");
         payload.put("room", room);
         payload.put("self", toWireUser(roomSession.user()));
-        payload.put("messages", historyPage.messages()
-                .stream()
-                .map(this::toWireMessage)
-                .toList());
+        payload.put("messages", toWireMessages(roomSession.roomId(), historyPage.messages()));
         payload.put("hasMoreHistory", historyPage.hasMore());
         payload.put("onlineUsers", onlineUserManager.getOnlineUsers(roomSession.roomId())
                 .stream()
@@ -311,14 +331,11 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         return payload;
     }
 
-    private Map<String, Object> historyPagePayload(String roomCode, HistoryPage page) {
+    private Map<String, Object> historyPagePayload(Long roomId, String roomCode, HistoryPage page) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "history:page");
         payload.put("roomCode", roomCode);
-        payload.put("messages", page.messages()
-                .stream()
-                .map(this::toWireMessage)
-                .toList());
+        payload.put("messages", toWireMessages(roomId, page.messages()));
         payload.put("hasMore", page.hasMore());
         return payload;
     }
@@ -378,7 +395,24 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         return m;
     }
 
-    private Map<String, Object> toWireMessage(Message msg) {
+    private List<Map<String, Object>> toWireMessages(Long roomId, List<Message> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return List.of();
+        }
+        List<Long> replyIds = messages.stream()
+                .map(Message::getReplyToId)
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
+        Map<Long, Message> replyMap = replyIds.isEmpty()
+                ? Map.of()
+                : messageService.findMapByIdsInRoom(roomId, replyIds);
+        return messages.stream()
+                .map(msg -> toWireMessage(msg, msg.getReplyToId() != null ? replyMap.get(msg.getReplyToId()) : null))
+                .toList();
+    }
+
+    private Map<String, Object> toWireMessage(Message msg, Message replyTarget) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", String.valueOf(msg.getId()));
         m.put("type", msg.getType());
@@ -387,6 +421,13 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         m.put("avatarColor", msg.getAvatarColor());
         m.put("content", msg.getContent());
         m.put("timestamp", msg.getCreateTime());
+        if (replyTarget != null) {
+            Map<String, Object> reply = new LinkedHashMap<>();
+            reply.put("id", String.valueOf(replyTarget.getId()));
+            reply.put("senderName", replyTarget.getNickname());
+            reply.put("contentSnippet", MessageService.toReplySnippet(replyTarget.getContent()));
+            m.put("replyTo", reply);
+        }
         return m;
     }
 

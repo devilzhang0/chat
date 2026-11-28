@@ -108,6 +108,12 @@ export interface JoinRoomPayload {
 
 export type MessageSendStatus = 'sending' | 'sent' | 'failed';
 
+export interface ReplySnapshot {
+  id: string;
+  senderName: string;
+  contentSnippet: string;
+}
+
 export interface ChatMessage {
   id: string;
   type: 'text' | 'system';
@@ -116,6 +122,7 @@ export interface ChatMessage {
   avatarColor: AvatarColorKey;
   content: string;
   timestamp: number;
+  replyTo?: ReplySnapshot;
   clientTempId?: string;
   sendStatus?: MessageSendStatus;
   failReason?: string;

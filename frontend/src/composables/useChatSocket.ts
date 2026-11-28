@@ -6,6 +6,7 @@ import type {
   CreateRoomPayload,
   JoinRoomPayload,
   OnlineUser,
+  ReplySnapshot,
   RoomInfo,
   RoomLookupResult,
   ServerEvent,
@@ -776,7 +777,7 @@ export function useChatSocket() {
     return result;
   }
 
-  function dispatchMessageFrame(content: string, clientTempId: string): void {
+  function dispatchMessageFrame(content: string, clientTempId: string, replyToId?: string): void {
     clearPendingSendTimer(clientTempId);
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       markMessageFailed(clientTempId, '当前未连接到服务器');
@@ -789,19 +790,21 @@ export function useChatSocket() {
     pendingSendTimers.set(clientTempId, timer);
 
     try {
-      socket.send(
-        JSON.stringify({
-          type: 'message:send',
-          content,
-          clientTempId,
-        })
-      );
+      const frame: Record<string, string> = {
+        type: 'message:send',
+        content,
+        clientTempId,
+      };
+      if (replyToId && /^\d+$/.test(replyToId)) {
+        frame.replyToId = replyToId;
+      }
+      socket.send(JSON.stringify(frame));
     } catch {
       markMessageFailed(clientTempId, '发送失败，请重试');
     }
   }
 
-  function sendMessage(content: string): boolean {
+  function sendMessage(content: string, replyTo?: ReplySnapshot | null): boolean {
     const trimmed = content.trim();
     if (!trimmed) return false;
     if (!currentUser.value) {
@@ -814,7 +817,9 @@ export function useChatSocket() {
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
-    // 乐观更新：立即以 sending 状态渲染临时气泡
+    const validReply = replyTo && /^\d+$/.test(replyTo.id) ? replyTo : undefined;
+
+    // 乐观更新：立即以 sending 状态渲染临时气泡（同步展示引用预览）
     const optimistic: ChatMessage = {
       id: `temp-${clientTempId}`,
       clientTempId,
@@ -824,10 +829,11 @@ export function useChatSocket() {
       avatarColor: currentUser.value.avatarColor,
       content: trimmed,
       timestamp: Date.now(),
+      replyTo: validReply,
       sendStatus: 'sending',
     };
     messages.value.push(optimistic);
-    dispatchMessageFrame(trimmed, clientTempId);
+    dispatchMessageFrame(trimmed, clientTempId, validReply?.id);
     return true;
   }
 
@@ -852,7 +858,7 @@ export function useChatSocket() {
       sendStatus: 'sending',
       failReason: undefined,
     };
-    dispatchMessageFrame(target.content, tempId);
+    dispatchMessageFrame(target.content, tempId, target.replyTo?.id);
     return true;
   }
 

@@ -25,11 +25,15 @@ CREATE TABLE IF NOT EXISTS `room` (
     UNIQUE KEY `uk_room_code` (`code`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '聊天室房间表';
 
--- 消息表（重建：增加 room_id 关联所属房间，不设默认大厅，旧测试数据会清空）
+-- 若已有新版 message 表仅需增量升级引用回复字段，可直接单独执行下面一行：
+-- ALTER TABLE `message` ADD COLUMN `reply_to_id` BIGINT DEFAULT NULL COMMENT '引用的消息 message.id' AFTER `room_id`;
+
+-- 消息表（重建：增加 room_id 与 reply_to_id，不设默认大厅，旧测试数据会清空）
 DROP TABLE IF EXISTS `message`;
 CREATE TABLE `message` (
     `id`           BIGINT      NOT NULL AUTO_INCREMENT,
     `room_id`      BIGINT      NOT NULL COMMENT '所属房间 room.id',
+    `reply_to_id`  BIGINT      DEFAULT NULL COMMENT '引用的消息 message.id',
     `sender_id`    VARCHAR(64) NOT NULL COMMENT '发送者 anon_id',
     `nickname`     VARCHAR(64) NOT NULL COMMENT '昵称快照',
     `avatar_color` VARCHAR(16) DEFAULT NULL COMMENT '头像颜色快照',

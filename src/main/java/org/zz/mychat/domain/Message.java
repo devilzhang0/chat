@@ -15,6 +15,9 @@ public class Message {
     /** 所属房间 room.id */
     private Long roomId;
 
+    /** 引用的消息 message.id（可为空） */
+    private Long replyToId;
+
     /** 发送者 anon_id */
     private String senderId;
 

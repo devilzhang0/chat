@@ -115,13 +115,15 @@ function playMessageTone(force = false): void {
  */
 export function useNotification(roomName: Ref<string | undefined>) {
   const backgroundUnread = ref(0);
+  const hasMentionUnread = ref(false);
 
   function syncDocumentTitle(): void {
     const name = roomName.value?.trim();
     const baseTitle = name ? `${name} - ${DEFAULT_TITLE}` : DEFAULT_TITLE;
     if (backgroundUnread.value > 0) {
       const countText = backgroundUnread.value > 99 ? '99+' : String(backgroundUnread.value);
-      document.title = `(${countText}) ${baseTitle}`;
+      const mentionPrefix = hasMentionUnread.value ? '[有人@你] ' : '';
+      document.title = `${mentionPrefix}(${countText}) ${baseTitle}`;
     } else {
       document.title = baseTitle;
     }
@@ -130,6 +132,9 @@ export function useNotification(roomName: Ref<string | undefined>) {
   function clearBackgroundUnread(): void {
     if (backgroundUnread.value !== 0) {
       backgroundUnread.value = 0;
+    }
+    if (hasMentionUnread.value) {
+      hasMentionUnread.value = false;
     }
     syncDocumentTitle();
   }
@@ -140,13 +145,17 @@ export function useNotification(roomName: Ref<string | undefined>) {
     }
   }
 
-  function notifyIncomingMessage(): void {
+  function notifyIncomingMessage(options?: {mentioned?: boolean}): void {
+    const mentioned = Boolean(options?.mentioned);
     if (document.hidden) {
       backgroundUnread.value += 1;
+      if (mentioned) {
+        hasMentionUnread.value = true;
+      }
       syncDocumentTitle();
     }
     if (soundEnabled.value) {
-      playMessageTone(false);
+      playMessageTone(mentioned);
     }
   }
 

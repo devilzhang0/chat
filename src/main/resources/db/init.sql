@@ -39,6 +39,7 @@ DROP TABLE IF EXISTS `message`;
 CREATE TABLE `message` (
     `id`           BIGINT      NOT NULL AUTO_INCREMENT,
     `room_id`      BIGINT      NOT NULL COMMENT '所属房间 room.id',
+    `reply_to_id`  BIGINT      DEFAULT NULL COMMENT '引用的消息 message.id',
     `sender_id`    VARCHAR(64) NOT NULL COMMENT '发送者 anon_id',
     `nickname`     VARCHAR(64) NOT NULL COMMENT '昵称快照',
     `avatar_color` VARCHAR(16) DEFAULT NULL COMMENT '头像颜色快照',
